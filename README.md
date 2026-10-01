@@ -63,7 +63,8 @@ process that belongs to a prifly session is named with that session.
 | | Orange | Red |
 |---|---|---|
 | WSL CPU: tasks waiting for a core (PSI `cpu some avg10`) | 10 % of the time | 40 % |
-| WSL memory: every task stalled on memory (PSI `memory full avg10`) | 0.5 % | 5 % |
+| WSL memory: every task stalled on memory (PSI `memory full avg10`) | 5 % | 20 % |
+| WSL memory: some task stalled on memory (PSI `memory some avg10`) | 20 % | — |
 | WSL memory: available | under 20 % | under 10 % |
 | WSL disk: every task stalled on disk (PSI `io full avg10`) | 5 % | 20 % |
 | Windows CPU: processor queue per core | 1 | 2 |

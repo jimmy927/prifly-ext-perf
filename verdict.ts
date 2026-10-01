@@ -5,7 +5,8 @@
  * - Linux: pressure stall information (docs.kernel.org/accounting/psi.html).
  *   CPU `some` is the share of time at least one task waited for a core;
  *   memory and I/O `full` the share when every task waited — time lost
- *   outright. Memory also turns red under 10 % available, before stalls.
+ *   outright. Memory is orange from 5 % `full` or 20 % `some`, red from 20 %
+ *   `full`, and also by what is available (orange under 20 %, red under 10 %).
  * - Windows: the long-standing Performance Monitor guidance — a processor
  *   queue above two per core is a CPU bottleneck; memory by commit charge and
  *   page-file writes (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
@@ -38,7 +39,11 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
     // Without PSI, a run queue twice the cores stands in.
     cpu: s.cpu === null ? band(s.runnable / s.cores, 1, 2) : band(s.cpu.some.avg10, 10, 40),
     memory: worst(
-      band(s.memory?.full.avg10 ?? 0, 0.5, 5),
+      // A memory stall also counts reading dropped file pages back and small
+      // reclaim pauses, which a healthy machine has: 0.6 % `full` with 40 % free
+      // read "short" on 2026-10-01. Only stalls a person would feel count.
+      band(s.memory?.full.avg10 ?? 0, 5, 20),
+      band(s.memory?.some.avg10 ?? 0, 20, Number.POSITIVE_INFINITY),
       available < 0.1 ? "critical" : available < 0.2 ? "warning" : "good",
     ),
     disk: band(s.io?.full.avg10 ?? 0, 5, 20),
