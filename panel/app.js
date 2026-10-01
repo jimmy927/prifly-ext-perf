@@ -1,6 +1,6 @@
-// The Performance window. Everything comes from `api/status`, asked once per
-// window (`every.js`) while the page is visible, and every number in it is the
-// average over that window. Asking is also what tells the extension the window
+// The Performance window. Everything comes from `api/status`, asked every
+// second (`every.js`) while the page is visible, and every number in it is the
+// average over the trailing period. Asking is also what tells the extension the window
 // is open, so it reads the process table only then.
 
 import { startEvery } from "./every.js";
@@ -413,7 +413,7 @@ function draw(state) {
   drawPrifly(state);
 }
 
-/** Asks for one window's averages and draws them; resolves with the seconds they cover. */
+/** Asks for the trailing period's averages and draws them; resolves with the seconds they cover. */
 async function refresh(seconds) {
   try {
     const response = await fetch(`api/status?window=${seconds}`);

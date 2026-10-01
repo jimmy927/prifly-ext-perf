@@ -17,12 +17,14 @@ window's ↗ button opens it in a window of its own. (A prifly from before
 
 ## Every second, or every five minutes
 
-The window has a control for how often it updates: 1 s, 2 s, 5 s, 10 s, 30 s,
-1 min or 5 min (2 s to begin with, and it remembers your choice). Beside it
-the window says what it shows: *Average of the last 30 s · next in 12 s*. Every
-number is the average over that window, not the last second, so it holds
-still: a 2 s spike in a 30 s window counts for a fifteenth. Before a window
-has filled it averages what there is and says so (*Average of the last 8 s*).
+The window has a control for the period it averages over: 1 s, 2 s, 5 s, 10 s,
+30 s, 1 min or 5 min (2 s to begin with, and it remembers your choice). It
+repaints every second whatever the period, each time with the average of the
+trailing period, and says so: *Average of the trailing 30 s, updated every
+second*. So the numbers move every second but hold still: two repaints of a
+30 s period share 29 of their seconds, and a 2 s spike counts for a fifteenth.
+Before a period has filled it averages what there is and says so (*Average of
+the last 8 s*).
 
 - **Rates are exact.** CPU (per process, session and kind, and in total),
   disk read and write, and Linux's busy share are the change of a cumulative
@@ -123,7 +125,7 @@ sandbox, so they add no processes here. They are only counted.
   every second, the last hour kept; if it ends, it is started again. A PowerShell call reads the
   machine's name, cores and memory once.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
-  while the window has asked within its own length and 10 s, the last five
+  while the window is open (it asks every second; 10 s without, and it counts as closed), the last five
   minutes kept. The extension runs inside the host, so the host is its own
   process. Relays outlive the host, so after a restart they belong to init
   and are found by their command line instead.

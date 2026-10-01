@@ -39,7 +39,7 @@ const CHIP_WINDOW = 10;
  * Linux and Windows ones (a process table is hundreds of entries a second).
  */
 const PROCS_KEEP = 310;
-/** The window counts as open while it asked within its own length plus this. */
+/** The window asks every second; it counts as open while it asked within this. */
 const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
@@ -159,7 +159,7 @@ function showChip(current: State): void {
 }
 
 function open(current: State): boolean {
-  return Date.now() - current.askedAt < current.askedWindow * 1000 + OPEN_FOR;
+  return Date.now() - current.askedAt < OPEN_FOR;
 }
 
 function refreshWhileOpen(current: State): void {

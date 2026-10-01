@@ -1,5 +1,7 @@
-// How often the Performance window asks, and the line that says so. The page
-// asks once per window and every number in the answer is the average over it.
+// The period the Performance window averages over, and the line that says so.
+// The page asks every second whatever the period, and every number in the
+// answer is the average of the trailing period: it moves every second and
+// still holds still, since each answer shares all but a second with the last.
 
 import { $, el } from "./format.js";
 
@@ -40,34 +42,34 @@ export function clock(seconds) {
   return `${Math.floor(seconds / 60)} min${rest > 0 ? ` ${rest} s` : ""}`;
 }
 
+/** The page asks this often, whatever the period. */
+const REPAINT_MS = 1000;
+
 /**
- * Asks `ask(seconds)` now and then once per window, shows the control in
+ * Asks `ask(seconds)` now and then every second, shows the control in
  * `#every` and the line in `#status`. `ask` resolves with how many seconds the
- * answer covers: less than the window before it has filled.
+ * answer covers: less than the period before it has filled.
  */
 export function startEvery(ask) {
   let seconds = saved();
   let covered = 0;
-  let nextAt = 0;
   let timer = null;
 
   const line = () => {
-    const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
-    const what = covered < seconds ? Math.max(1, Math.round(covered)) : seconds;
-    const next = document.hidden || nextAt === 0 ? "" : ` · next in ${clock(left)}`;
-    $("status").textContent = `Average of the last ${clock(what)}${next}`;
+    // Samples land a few ms either side of the second: 9.6 s of a 10 s period is all of it.
+    const filled = covered >= seconds - 0.5;
+    const what = filled ? seconds : Math.max(1, Math.round(covered));
+    $("status").textContent = filled
+      ? `Average of the trailing ${clock(what)}, updated every second`
+      : `Average of the last ${clock(what)}`;
   };
 
   const run = async () => {
     clearTimeout(timer);
-    nextAt = 0;
     covered = (await ask(seconds)) ?? covered;
-    // Nothing to average yet (the first second): ask again at once rather than a window later.
-    const wait = covered < 1 ? 1 : seconds;
-    nextAt = Date.now() + wait * 1000;
     line();
     // Hidden, it is not asked: the extension then stops reading the process table.
-    if (!document.hidden) timer = setTimeout(() => void run(), wait * 1000);
+    if (!document.hidden) timer = setTimeout(() => void run(), REPAINT_MS);
   };
 
   const buttons = CHOICES.map(([n, label]) => {
@@ -88,7 +90,6 @@ export function startEvery(ask) {
   $("every").replaceChildren(...buttons);
   mark();
 
-  setInterval(line, 1000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) void run();
   });
