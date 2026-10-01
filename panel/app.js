@@ -1,11 +1,12 @@
-// The Performance window. Everything comes from `api/status`, asked every two
-// seconds while the window is visible; asking is also what tells the
-// extension the window is open, so it reads the process table only then.
+// The Performance window. Everything comes from `api/status`, asked once per
+// window (`every.js`) while the page is visible, and every number in it is the
+// average over that window. Asking is also what tells the extension the window
+// is open, so it reads the process table only then.
 
+import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
 
 let last = null;
-let polling = null;
 
 function metric(tone, name, main, small, line) {
   return el(
@@ -37,13 +38,13 @@ function linuxCard(linux) {
   const waited =
     s.cpu === null
       ? `${pct(s.busy)} busy`
-      : `Waited for a core ${pct(s.cpu.some.avg10)} of the last 10 s`;
+      : `Waited for a core ${pct(s.cpu.some.avg10)} of the time`;
   const swap = s.swapTotal > 0 ? ` · swap ${bytes(s.swapUsed)} used` : " · no swap";
   return hostCard(linux.name, `${s.cores} cores · ${bytes(s.memTotal)}`, [
     metric(
       v.cpu,
       "CPU",
-      `${s.runnable} ready to run / ${s.cores} cores`,
+      `${s.runnable.toFixed(1)} ready to run / ${s.cores} cores`,
       waited,
       spark(history("linux", "cpu"), 100),
     ),
@@ -51,14 +52,14 @@ function linuxCard(linux) {
       v.memory,
       "Memory",
       `${bytes(s.memAvailable)} free of ${bytes(s.memTotal)}`,
-      `All tasks waited for memory ${pct(s.memory?.full.avg10 ?? 0)} of the last 10 s${swap}`,
+      `All tasks waited for memory ${pct(s.memory?.full.avg10 ?? 0)} of the time${swap}`,
       spark(history("linux", "memory"), 100),
     ),
     metric(
       v.disk,
       "Disk I/O",
       `${rate(s.diskRead)} read · ${rate(s.diskWrite)} write`,
-      `All tasks waited for disk ${pct(s.io?.full.avg10 ?? 0)} of the last 10 s`,
+      `All tasks waited for disk ${pct(s.io?.full.avg10 ?? 0)} of the time`,
       spark(history("linux", "disk")),
     ),
     metric(
@@ -171,13 +172,14 @@ const WORKING = new Set(["working", "starting"]);
 
 function drawTiles(report, state) {
   const working = report.sessions.filter((s) => WORKING.has(s.state)).length;
+  const waiting = report.sessions.filter((s) => s.state === "waiting").length;
   const idle = report.sessions.filter((s) => s.state === "idle").length;
   const copies = report.mcp.reduce((sum, m) => sum + m.copies, 0);
   const cloud = state.cloud === null ? "" : ` · ${state.cloud.recent} cloud this hour`;
   const k = report.kinds;
   $("tiles").replaceChildren(
     tile("Processes", String(report.total.processes), `for ${report.sessions.length} sessions`),
-    tile("Sessions", `${working} working`, `${idle} idle at their prompt${cloud}`),
+    tile("Sessions", `${working} working`, `${waiting} waiting for you · ${idle} idle${cloud}`),
     tile(
       "MCP server copies",
       String(copies),
@@ -374,11 +376,15 @@ function group(title, rows) {
 function drawSessions(report, state) {
   const maxCpu = Math.max(1, ...report.sessions.map((s) => s.cpu));
   const working = report.sessions.filter((s) => WORKING.has(s.state));
+  const waiting = report.sessions.filter((s) => s.state === "waiting");
   const idle = report.sessions.filter((s) => s.state === "idle");
-  const other = report.sessions.filter((s) => !WORKING.has(s.state) && s.state !== "idle");
+  const other = report.sessions.filter(
+    (s) => !WORKING.has(s.state) && s.state !== "waiting" && s.state !== "idle",
+  );
   const rows = [];
   for (const [title, list] of [
     ["Working", working],
+    ["Waiting for you", waiting],
     ["Idle at their prompt", idle],
     ["Other", other],
   ]) {
@@ -403,29 +409,24 @@ function drawPrifly(state) {
 function draw(state) {
   last = state;
   $("error").hidden = true;
-  $("status").textContent = `Live · every ${state.every / 1000} s · last 5 min`;
   drawMachine(state);
   drawPrifly(state);
 }
 
-async function refresh() {
-  clearTimeout(polling);
+/** Asks for one window's averages and draws them; resolves with the seconds they cover. */
+async function refresh(seconds) {
   try {
-    const response = await fetch("api/status");
+    const response = await fetch(`api/status?window=${seconds}`);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? response.statusText);
     draw(body);
+    return body.covered;
   } catch (error) {
     $("error").hidden = false;
     $("error").textContent = String(error.message ?? error);
+    return undefined;
   }
-  // Hidden, it is not asked: the extension then stops reading the process table.
-  if (!document.hidden) polling = setTimeout(() => void refresh(), last?.every ?? 2000);
 }
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) void refresh();
-});
 
 function showTab(tab) {
   for (const section of document.querySelectorAll("section")) section.hidden = section.id !== tab;
@@ -465,4 +466,4 @@ addEventListener("message", (event) => {
   if (last !== null) draw(last);
 });
 
-void refresh();
+startEvery(refresh);

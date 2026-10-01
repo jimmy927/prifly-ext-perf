@@ -19,16 +19,16 @@ export type Pressure = { some: Stall; full: Stall };
 export type LinuxSample = {
   at: number;
   cores: number;
-  /** Share of all cores busy since the last sample, 0–100. */
+  /** Share of all cores busy over the window, 0–100. */
   busy: number;
-  /** Tasks ready to run, the running included (`procs_running`). */
+  /** Tasks ready to run, the running included (`procs_running`): the mean over the window. */
   runnable: number;
   load: [number, number, number];
   memTotal: number;
   memAvailable: number;
   swapTotal: number;
   swapUsed: number;
-  /** Bytes per second read from and written to disk since the last sample. */
+  /** Bytes per second read from and written to disk over the window. */
   diskRead: number;
   diskWrite: number;
   cpu: Pressure | null;
@@ -94,40 +94,39 @@ function vmstat(): { pgpgin: number; pgpgout: number } {
   return { pgpgin: read("pgpgin"), pgpgout: read("pgpgout") };
 }
 
-type Counters = { at: number; total: number; idle: number; pgpgin: number; pgpgout: number };
+/**
+ * One read of Linux: the counters as they stand (cumulative since boot, so any
+ * two reads give an exact average between them) and the levels beside them.
+ */
+export type LinuxRaw = Omit<LinuxSample, "busy" | "diskRead" | "diskWrite"> & {
+  /** Jiffies on all cores, and the idle share of them. */
+  total: number;
+  idle: number;
+  /** Pages in and out, in kB. */
+  pgpgin: number;
+  pgpgout: number;
+};
 
-/** Reads Linux every call and turns its counters into rates against the call before. */
-export class LinuxSampler {
-  private before: Counters | null = null;
-
-  sample(): LinuxSample {
-    const at = Date.now();
-    const stat = parseStat(readFileSync("/proc/stat", "utf8"));
-    const io = vmstat();
-    const now: Counters = { at, total: stat.total, idle: stat.idle, ...io };
-    const was = this.before ?? now;
-    this.before = now;
-    const ticks = now.total - was.total;
-    const seconds = Math.max((now.at - was.at) / 1000, 0.001);
-    const mem = parseMeminfo(readFileSync("/proc/meminfo", "utf8"));
-    const kb = (name: string) => (mem.get(name) ?? 0) * 1024;
-    const load = readFileSync("/proc/loadavg", "utf8").split(" ").slice(0, 3).map(Number);
-    return {
-      at,
-      cores: availableParallelism(),
-      busy: ticks > 0 ? (100 * (ticks - (now.idle - was.idle))) / ticks : 0,
-      runnable: stat.runnable,
-      load: [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0],
-      memTotal: kb("MemTotal"),
-      memAvailable: kb("MemAvailable"),
-      swapTotal: kb("SwapTotal"),
-      swapUsed: kb("SwapTotal") - kb("SwapFree"),
-      // pgpgin/pgpgout count kB.
-      diskRead: ((now.pgpgin - was.pgpgin) * 1024) / seconds,
-      diskWrite: ((now.pgpgout - was.pgpgout) * 1024) / seconds,
-      cpu: readPressure("cpu"),
-      memory: readPressure("memory"),
-      io: readPressure("io"),
-    };
-  }
+/** Reads Linux now. Rates are made from two of these (`average.ts`). */
+export function readLinux(): LinuxRaw {
+  const stat = parseStat(readFileSync("/proc/stat", "utf8"));
+  const mem = parseMeminfo(readFileSync("/proc/meminfo", "utf8"));
+  const kb = (name: string) => (mem.get(name) ?? 0) * 1024;
+  const load = readFileSync("/proc/loadavg", "utf8").split(" ").slice(0, 3).map(Number);
+  return {
+    at: Date.now(),
+    cores: availableParallelism(),
+    total: stat.total,
+    idle: stat.idle,
+    ...vmstat(),
+    runnable: stat.runnable,
+    load: [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0],
+    memTotal: kb("MemTotal"),
+    memAvailable: kb("MemAvailable"),
+    swapTotal: kb("SwapTotal"),
+    swapUsed: kb("SwapTotal") - kb("SwapFree"),
+    cpu: readPressure("cpu"),
+    memory: readPressure("memory"),
+    io: readPressure("io"),
+  };
 }

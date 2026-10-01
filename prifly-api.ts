@@ -83,6 +83,13 @@ export type Decoration = {
    * are several.
    */
   launcher?: string | undefined;
+  /**
+   * One of the extension's own panels, by its manifest `id`. A status-bar
+   * item that names one is drawn as that panel's button — its icon in the
+   * item's tone, the details in its hover — instead of a chip of its own.
+   * A prifly older than this field shows the item as a chip, as before.
+   */
+  panel?: string | undefined;
 };
 
 /** A column of a board, in the order the board has them. */

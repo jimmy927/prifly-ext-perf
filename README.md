@@ -6,20 +6,43 @@ around it. A second tab answers the same question for prifly itself: how many
 processes it runs, for which sessions, and how many MCP servers those sessions
 started.
 
-It adds two things to prifly's status bar:
-
-- **A chip** that says *Fine*, or names what is short ("Out of CPU in WSL").
-  Hover it for each resource's colour.
-- **A Performance button** that opens the window below over nearly the whole
-  of prifly.
+It adds one item to prifly's status bar: a **Performance** button whose icon
+is green, orange or red for the worst of CPU, memory and disk over the last
+10 s. Hover it for what is short ("Out of CPU in WSL") and each resource's
+colour; click it for the window below, over nearly the whole of prifly. The
+window's ↗ button opens it in a window of its own. (A prifly from before
+2026-10-01 shows the colour as a separate chip beside the button.)
 
 ![The Machine tab, light](screenshots/machine-light.png)
+
+## Every second, or every five minutes
+
+The window has a control for how often it updates: 1 s, 2 s, 5 s, 10 s, 30 s,
+1 min or 5 min (2 s to begin with, and it remembers your choice). Beside it
+the window says what it shows: *Average of the last 30 s · next in 12 s*. Every
+number is the average over that window, not the last second, so it holds
+still: a 2 s spike in a 30 s window counts for a fifteenth. Before a window
+has filled it averages what there is and says so (*Average of the last 8 s*).
+
+- **Rates are exact.** CPU (per process, session and kind, and in total),
+  disk read and write, and Linux's busy share are the change of a cumulative
+  counter between the window's start and its end, over the time between. A
+  process born mid-window counts what it used since its first sample, spread
+  over the whole window; one that ended inside it is gone from the table.
+- **Levels are means.** Available memory, the run queue, swap, load, the
+  pressure figures (the kernel's own 10 s averages, averaged again) and
+  Windows' counters are the mean of the one-second samples in the window.
+- **Colours and the headline** are judged from the averaged numbers.
+- **Sparklines** have one point per window: the last 60 that fit in the last
+  hour.
+- The status-bar colour always judges the last 10 s, with the window open or not.
+  The busiest Windows processes are read every 10 s whatever the window.
 
 ## Machine
 
 The headline names whatever is short or out, worst first. Under it, WSL and
 Windows each get four rows, each with a colour, the reading, what it means,
-and a five-minute sparkline:
+and a sparkline of the averages:
 
 | | WSL | Windows |
 |---|---|---|
@@ -84,8 +107,8 @@ nothing wrong (4,195 measured on the machine this was written on).
   and costs nothing here. The tile turns orange when one server runs more than
   one copy.
 - **By session**: each session's processes, CPU, memory, disk, MCP servers
-  and the busiest program its turn is running now, grouped into working, idle
-  and other.
+  and the busiest program its turn is running now, grouped into working,
+  waiting for you, idle at their prompt, and other.
 
 Cloud sessions run on Anthropic's machines and their MCP servers run in that
 sandbox, so they add no processes here. They are only counted.
@@ -93,14 +116,15 @@ sandbox, so they add no processes here. They are only counted.
 ## Where the numbers come from
 
 - **WSL**: `/proc/pressure/{cpu,memory,io}`, `/proc/stat`, `/proc/meminfo`,
-  `/proc/vmstat` and `/proc/loadavg`, every 2 s. This is the WSL VM's single
+  `/proc/vmstat` and `/proc/loadavg`, every second, the last hour kept. This is the WSL VM's single
   kernel, so Docker Desktop's containers count in these totals. They run in a
   distro of their own, though, so they never appear in the process list.
 - **Windows**: one `typeperf.exe` that stays running and prints its counters
-  every 2 s; if it ends, it is started again. A PowerShell call reads the
+  every second, the last hour kept; if it ends, it is started again. A PowerShell call reads the
   machine's name, cores and memory once.
-- **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, read only while the
-  window is open. The extension runs inside the host, so the host is its own
+- **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
+  while the window has asked within its own length and 10 s, the last five
+  minutes kept. The extension runs inside the host, so the host is its own
   process. Relays outlive the host, so after a restart they belong to init
   and are found by their command line instead.
 - **MCP servers**: matched against the `mcpServers` in `~/.claude.json` (user

@@ -1,6 +1,6 @@
 /**
  * Windows' view, read from inside WSL: one `typeperf.exe` that stays running
- * and prints the counters below every two seconds as CSV — about a second to
+ * and prints the counters below every second as CSV — about a second to
  * start once, where a PowerShell per poll would cost that every time. Which
  * processes use the CPU comes from PowerShell, and only while the window is
  * open (`topProcesses`).
@@ -12,6 +12,7 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { HOUR, keep } from "./ring";
 
 const SYSTEM32 = "/mnt/c/Windows/System32";
 const TYPEPERF = `${SYSTEM32}/typeperf.exe`;
@@ -70,9 +71,13 @@ export function parseRow(header: string, line: string, at: number): WindowsCount
   return row;
 }
 
-/** Keeps one `typeperf` running and the latest line it printed; starts it again if it ends. */
+/**
+ * Keeps one `typeperf` running and the last hour of the lines it printed (the
+ * panel averages over them); starts it again if it ends.
+ */
 export class WindowsSampler {
   latest: WindowsCounters | null = null;
+  readonly history: WindowsCounters[] = [];
   error = "";
   private child: ChildProcess | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -99,6 +104,7 @@ export class WindowsSampler {
       const row = parseRow(header, line, Date.now());
       if (row !== null) {
         this.latest = row;
+        keep(this.history, row, HOUR);
         this.error = "";
       }
     });

@@ -5,36 +5,46 @@
  * second tab is prifly itself: how many processes it runs, for which
  * sessions, how many MCP servers they started, and what each costs.
  *
- * Linux is read every two seconds, always: a few small files, for the chip.
+ * Linux is read every second, always: a few small files, for the chip.
  * Windows' counters come from one `typeperf` that stays running. The process
  * table, Windows' busiest processes and the cloud sessions are read only
- * while the window is open, since nothing else shows them.
+ * while the window is open, since nothing else shows them. Every number the
+ * window shows is an average over the window it asked for (`average.ts`).
  */
 
+import { averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import { McpConfig } from "./mcp";
 import { commandLabel, ownersOf, type PriflyReport, priflyReport } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
-import { type Proc, ProcSampler } from "./procs";
+import { type Proc, type ProcSnapshot, readProcs } from "./procs";
+import { endAt, HOUR, keep, windowEnds } from "./ring";
 import { headline, linuxVerdicts, type Tone, type Verdicts, windowsVerdicts } from "./verdict";
 import {
   topProcesses,
+  type WindowsCounters,
   type WindowsInfo,
   type WindowsProcess,
   WindowsSampler,
   windowsInfo,
   windowsTools,
 } from "./windows";
-import { type LinuxSample, LinuxSampler } from "./wsl";
+import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
 
-const EVERY = 2_000;
-/** Five minutes of samples, for the sparklines. */
-const KEEP = 150;
-/** The window counts as open while it asked within this long. */
+const EVERY = 1_000;
+/** The chip judges the last 10 s whether or not the window is open: it must not flicker. */
+const CHIP_WINDOW = 10;
+/**
+ * The longest window is 5 min, and processes are only read while the window is
+ * open, so their samples are kept 5 min and a little over, not the hour of the
+ * Linux and Windows ones (a process table is hundreds of entries a second).
+ */
+const PROCS_KEEP = 310;
+/** The window counts as open while it asked within its own length plus this. */
 const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
 
-/** One point of every sparkline. */
+/** One point of every sparkline: the average of one window. */
 type Point = {
   at: number;
   linux: { cpu: number; memory: number; disk: number };
@@ -43,40 +53,43 @@ type Point = {
 
 type State = {
   api: ExtensionApi;
-  linux: LinuxSampler;
-  procs: ProcSampler;
+  /** The last hour of reads, one a second. */
+  linux: LinuxRaw[];
+  /** The last five minutes of process tables, one a second while the window is open. */
+  procs: ProcSnapshot[];
   windows: WindowsSampler | null;
   info: WindowsInfo | null;
-  last: LinuxSample | null;
-  history: Point[];
-  table: Proc[];
-  report: PriflyReport | null;
   topWindows: WindowsProcess[];
   topWindowsAt: number;
   cloud: { recent: number; total: number } | null;
   cloudAt: number;
   askedAt: number;
+  /** Seconds of the window it asked for last. */
+  askedWindow: number;
   chip: string;
 };
 
 let state: State | null = null;
 
-function windowsVerdictsOf(current: State): Verdicts | null {
-  const counters = current.windows?.latest;
-  if (counters === undefined || counters === null || current.info === null) return null;
-  return windowsVerdicts(counters, current.info);
+/** Windows' verdicts for counters already averaged. */
+function windowsVerdictsOf(info: WindowsInfo | null, c: WindowsCounters | null): Verdicts | null {
+  return c === null || info === null ? null : windowsVerdicts(c, info);
 }
 
-function places(current: State, linux: Verdicts) {
-  const windows = windowsVerdictsOf(current);
+function windowsAverage(current: State, seconds: number, endIndex?: number) {
+  return current.windows === null
+    ? null
+    : averageWindows(current.windows.history, seconds, endIndex);
+}
+
+function places(current: State, linux: Verdicts, windows: Verdicts | null) {
   const out = [{ name: current.windows === null ? "Linux" : "WSL", verdicts: linux }];
   if (windows !== null) out.push({ name: "Windows", verdicts: windows });
   return out;
 }
 
-function point(current: State, s: LinuxSample): Point {
-  const c = current.windows?.latest ?? null;
-  const memTotal = current.info?.memTotal ?? 0;
+function point(info: WindowsInfo | null, s: LinuxSample, c: WindowsCounters | null): Point {
+  const memTotal = info?.memTotal ?? 0;
   return {
     at: s.at,
     linux: {
@@ -95,6 +108,17 @@ function point(current: State, s: LinuxSample): Point {
   };
 }
 
+/** One point per window, the last 60 that fit in the hour. */
+function history(current: State, seconds: number): Point[] {
+  return windowEnds(current.linux, seconds).flatMap((index) => {
+    const linux = averageLinux(current.linux, seconds, index);
+    if (linux === null) return [];
+    const ring = current.windows?.history ?? [];
+    const windows = windowsAverage(current, seconds, endAt(ring, linux.value.at));
+    return [point(current.info, linux.value, windows?.value ?? null)];
+  });
+}
+
 const ICON_TONE: Record<Tone, Decoration["tone"]> = {
   good: "good",
   warning: "warning",
@@ -102,8 +126,15 @@ const ICON_TONE: Record<Tone, Decoration["tone"]> = {
 };
 
 /** The status-bar chip: shown again only when what it says changed. */
-function showChip(current: State, linux: Verdicts): void {
-  const judged = places(current, linux);
+function showChip(current: State): void {
+  const linux = averageLinux(current.linux, CHIP_WINDOW);
+  if (linux === null) return;
+  const windows = windowsAverage(current, CHIP_WINDOW);
+  const judged = places(
+    current,
+    linuxVerdicts(linux.value),
+    windowsVerdictsOf(current.info, windows?.value ?? null),
+  );
   const { tone, text } = headline(judged);
   const label = tone === "good" ? "Fine" : (text.split(".")[0] ?? text);
   const details = judged.map(
@@ -114,22 +145,25 @@ function showChip(current: State, linux: Verdicts): void {
   if (key === current.chip) return;
   current.chip = key;
   current.api.show({}, [
-    { key: "perf", icon: "activity", label, tone: ICON_TONE[tone], details: [text, ...details] },
+    {
+      key: "perf",
+      icon: "activity",
+      label,
+      tone: ICON_TONE[tone],
+      // The label is the headline's first sentence: repeated only when there is more to it.
+      details: text === `${label}.` ? details : [text, ...details],
+      // Drawn as the Performance button's own colour, not a chip beside it.
+      panel: "perf",
+    },
   ]);
 }
 
 function open(current: State): boolean {
-  return Date.now() - current.askedAt < OPEN_FOR;
+  return Date.now() - current.askedAt < current.askedWindow * 1000 + OPEN_FOR;
 }
 
 function refreshWhileOpen(current: State): void {
-  current.table = current.procs.sample();
-  current.report = priflyReport(
-    current.table,
-    process.pid,
-    current.api.sessions(),
-    new McpConfig(),
-  );
+  keep(current.procs, readProcs(), PROCS_KEEP);
   const now = Date.now();
   if (current.windows !== null && now - current.topWindowsAt > TOP_WINDOWS_EVERY) {
     current.topWindowsAt = now;
@@ -155,11 +189,8 @@ function refreshWhileOpen(current: State): void {
 }
 
 function tick(current: State): void {
-  const sample = current.linux.sample();
-  current.last = sample;
-  current.history.push(point(current, sample));
-  if (current.history.length > KEEP) current.history.shift();
-  showChip(current, linuxVerdicts(sample));
+  keep(current.linux, readLinux(), HOUR);
+  showChip(current);
   if (open(current)) refreshWhileOpen(current);
 }
 
@@ -176,19 +207,16 @@ export function activate(api: ExtensionApi): () => void {
   const windows = windowsTools() ? new WindowsSampler(EVERY / 1000) : null;
   const current: State = {
     api,
-    linux: new LinuxSampler(),
-    procs: new ProcSampler(),
+    linux: [],
+    procs: [],
     windows,
     info: null,
-    last: null,
-    history: [],
-    table: [],
-    report: null,
     topWindows: [],
     topWindowsAt: 0,
     cloud: null,
     cloudAt: 0,
     askedAt: 0,
+    askedWindow: 0,
     chip: "",
   };
   state = current;
@@ -206,9 +234,9 @@ export function activate(api: ExtensionApi): () => void {
 }
 
 /** The busiest processes this Linux sees, each with the session it works for. */
-function topLinux(current: State) {
-  const owners = ownersOf(current.table, current.report?.sessions ?? []);
-  return [...current.table]
+function topLinux(table: Proc[], report: PriflyReport | null) {
+  const owners = ownersOf(table, report?.sessions ?? []);
+  return [...table]
     .sort((a, b) => b.cpu - a.cpu)
     .slice(0, 8)
     .filter((proc) => proc.cpu >= 0.05)
@@ -222,32 +250,42 @@ function topLinux(current: State) {
     }));
 }
 
-function status(current: State) {
-  const linux = current.last;
+/** Everything the page shows, each number averaged over the last `seconds`. */
+function status(current: State, seconds: number) {
+  const linux = averageLinux(current.linux, seconds);
   if (linux === null) throw new Error("No sample yet.");
-  const linuxJudged = linuxVerdicts(linux);
-  const windowsJudged = windowsVerdictsOf(current);
+  const procs = averageProcs(current.procs, seconds);
+  const table = procs?.value ?? [];
+  const windows = windowsAverage(current, seconds);
+  const linuxJudged = linuxVerdicts(linux.value);
+  const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
+  const report =
+    procs === null
+      ? null
+      : priflyReport(table, process.pid, current.api.sessions(), new McpConfig());
   return {
-    headline: headline(places(current, linuxJudged)),
+    headline: headline(places(current, linuxJudged, windowsJudged)),
     linux: {
       name: current.windows === null ? "Linux" : "WSL",
-      sample: linux,
+      sample: linux.value,
       verdicts: linuxJudged,
     },
     windows:
       current.windows === null
         ? null
         : {
-            counters: current.windows.latest,
+            counters: windows?.value ?? null,
             info: current.info,
             verdicts: windowsJudged,
             error: current.windows.error,
           },
-    history: current.history,
-    top: { linux: topLinux(current), windows: current.topWindows },
-    prifly: current.report,
+    history: history(current, seconds),
+    top: { linux: topLinux(table, report), windows: current.topWindows },
+    prifly: report,
     cloud: current.cloud,
-    every: EVERY,
+    window: seconds,
+    // A window that has not filled yet says how much it has.
+    covered: Math.min(linux.covered, procs?.covered ?? Infinity, windows?.covered ?? Infinity),
   };
 }
 
@@ -255,9 +293,14 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   const current = state;
   if (current === null) throw new Error("Performance is not running.");
   if (request.path !== "status") throw new Error(`No such request: ${request.path}`);
+  const seconds = windowOf(request.query["window"]);
   const wasOpen = open(current);
   current.askedAt = Date.now();
-  // Opened just now: read the processes at once rather than at the next tick.
-  if (!wasOpen) refreshWhileOpen(current);
-  return status(current);
+  current.askedWindow = seconds;
+  // Opened just now: what was kept is from before a gap, so start the processes afresh.
+  if (!wasOpen) {
+    current.procs.length = 0;
+    refreshWhileOpen(current);
+  }
+  return status(current, seconds);
 }

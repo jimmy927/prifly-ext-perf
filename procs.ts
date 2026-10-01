@@ -1,13 +1,12 @@
 /**
- * Every process this Linux can see, from `/proc`, with its CPU and disk use
- * since the last read. Only this distro's processes are visible: Docker
+ * Every process this Linux can see, from `/proc`, with its counters. Only this distro's processes are visible: Docker
  * Desktop's containers live in a distro of their own, so they count in the
  * kernel's totals (`wsl.ts`) but never appear here.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 
-const TICKS_PER_SECOND = 100;
+export const TICKS_PER_SECOND = 100;
 const PAGE = 4096;
 
 export type Proc = {
@@ -19,14 +18,17 @@ export type Proc = {
   argv: string[];
   /** Resident memory, bytes. */
   rss: number;
-  /** Cores in use since the last read: 1.5 is one and a half cores. */
+  /** Cores in use over the window: 1.5 is one and a half cores. */
   cpu: number;
-  /** Bytes per second read from and written to disk since the last read. */
+  /** Bytes per second read from and written to disk over the window. */
   read: number;
   write: number;
 };
 
-type Totals = { ticks: number; read: number; write: number };
+/** What a process has used since it started: clock ticks and bytes. */
+export type Totals = { ticks: number; read: number; write: number };
+
+export type ProcReading = Omit<Proc, "cpu" | "read" | "write"> & Totals;
 
 /** `/proc/<pid>/stat`: the comm may hold spaces and brackets, so fields count from its last `)`. */
 export function parseProcStat(
@@ -86,34 +88,17 @@ function readOne(
   }
 }
 
-/** Reads the process table every call; rates are against the call before. */
-export class ProcSampler {
-  private before = new Map<number, Totals>();
-  private at = 0;
+/** The table as one read saw it; rates come from two of these (`average.ts`). */
+export type ProcSnapshot = { at: number; procs: Map<number, ProcReading> };
 
-  sample(): Proc[] {
-    const now = Date.now();
-    const seconds = this.at === 0 ? 0 : (now - this.at) / 1000;
-    const next = new Map<number, Totals>();
-    const out: Proc[] = [];
-    for (const name of readdirSync("/proc")) {
-      const pid = Number(name);
-      if (!Number.isInteger(pid)) continue;
-      const one = readOne(pid);
-      if (one === null) continue;
-      next.set(pid, one.totals);
-      const was = this.before.get(pid);
-      const rate = (a: number, b: number) =>
-        was === undefined || seconds <= 0 ? 0 : Math.max(0, a - b) / seconds;
-      out.push({
-        ...one.proc,
-        cpu: rate(one.totals.ticks, was?.ticks ?? 0) / TICKS_PER_SECOND,
-        read: rate(one.totals.read, was?.read ?? 0),
-        write: rate(one.totals.write, was?.write ?? 0),
-      });
-    }
-    this.before = next;
-    this.at = now;
-    return out;
+/** Reads the process table now: what each process is, and its counters since it started. */
+export function readProcs(): ProcSnapshot {
+  const procs = new Map<number, ProcReading>();
+  for (const name of readdirSync("/proc")) {
+    const pid = Number(name);
+    if (!Number.isInteger(pid)) continue;
+    const one = readOne(pid);
+    if (one !== null) procs.set(pid, { ...one.proc, ...one.totals });
   }
+  return { at: Date.now(), procs };
 }
