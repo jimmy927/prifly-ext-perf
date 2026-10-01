@@ -1,0 +1,17 @@
+{
+  "id": "perf",
+  "name": "Performance",
+  "description": "Whether this machine is out of CPU, memory or disk — in WSL and in Windows — in green, orange and red, with what uses it; and a tab for prifly itself: its processes, sessions and MCP servers.",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "panels": [
+    {
+      "id": "perf",
+      "label": "Performance",
+      "icon": "activity",
+      "description": "CPU, memory and disk in WSL and Windows, and what prifly runs",
+      "folder": "panel",
+      "page": "index.html"
+    }
+  ]
+}

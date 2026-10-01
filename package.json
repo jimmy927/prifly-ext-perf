@@ -1,0 +1,16 @@
+{
+  "name": "prifly-ext-perf",
+  "private": true,
+  "type": "module",
+  "description": "A prifly extension: whether the machine is out of CPU, memory or disk, in WSL and Windows, and what prifly itself runs.",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@types/bun": "^1.1.14",
+    "typescript": "^7.0.2"
+  }
+}
