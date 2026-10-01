@@ -69,8 +69,24 @@ describe("Windows", () => {
     expect(windowsVerdicts({ ...counters, queue: 40 }, info).cpu).toBe("critical");
   });
 
-  test("15 % available is short of memory", () => {
-    expect(windowsVerdicts({ ...counters, availableMB: 7218 }, info).memory).toBe("warning");
+  test("18 % available, 70 % committed and no paging is fine", () => {
+    const calmDay = { ...counters, availableMB: 8900, committed: 70, pagesOut: 0 };
+    expect(windowsVerdicts(calmDay, info).memory).toBe("good");
+  });
+
+  test("under 10 % available is short, under 5 % out", () => {
+    expect(windowsVerdicts({ ...counters, availableMB: 4000 }, info).memory).toBe("warning");
+    expect(windowsVerdicts({ ...counters, availableMB: 2000 }, info).memory).toBe("critical");
+  });
+
+  test("commit charge near the limit is short of memory however much is available", () => {
+    expect(windowsVerdicts({ ...counters, committed: 92 }, info).memory).toBe("warning");
+    expect(windowsVerdicts({ ...counters, committed: 98 }, info).memory).toBe("critical");
+  });
+
+  test("writing to the page file is short of memory", () => {
+    expect(windowsVerdicts({ ...counters, pagesOut: 500 }, info).memory).toBe("warning");
+    expect(windowsVerdicts({ ...counters, pagesOut: 5000 }, info).memory).toBe("critical");
   });
 
   test("reads at 30 ms are out of disk", () => {

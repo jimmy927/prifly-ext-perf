@@ -42,8 +42,9 @@ process that belongs to a prifly session is named with that session.
 | WSL memory: available | under 20 % | under 10 % |
 | WSL disk: every task stalled on disk (PSI `io full avg10`) | 5 % | 20 % |
 | Windows CPU: processor queue per core | 1 | 2 |
-| Windows memory: available | under 20 % | under 10 % |
 | Windows memory: committed | 90 % | 97 % |
+| Windows memory: writes to the page file | 1 MB/s | 10 MB/s |
+| Windows memory: available | under 10 % or 2 GB | under 5 % or 1 GB |
 | Windows disk: time per read or write | 15 ms | 25 ms |
 
 On Linux the colours come from [pressure stall
@@ -53,7 +54,14 @@ a machine feel slow. Load average is shown without a colour because Linux also
 counts tasks waiting on disk in it. Without PSI, a run queue of more than twice
 the cores stands in for CPU.
 
-On Windows the thresholds are the usual Performance Monitor guidance. One
+Windows memory is judged mainly by commit charge (can Windows still hand
+memory out?) and by writes to the page file (is it pushing memory out to make
+room?). Low available memory counts only when it is truly low. The WSL VM
+keeps its own file cache, which Windows counts as used, so 18 % available with
+70 % committed and no paging is a calm machine.
+
+For CPU and disk, the Windows thresholds are the usual Performance Monitor
+guidance. One
 rule from that guidance is left out on purpose: "`Pages Input/sec` under 15"
 dates from spinning disks. An NVMe laptop reads thousands a second with
 nothing wrong (4,195 measured on the machine this was written on).
@@ -64,9 +72,12 @@ nothing wrong (4,195 measured on the machine this was written on).
 
 - **Tiles**: processes, sessions working and idle (plus cloud sessions active
   this hour), MCP server copies, memory, and CPU and disk.
-- **By kind**: each session's `claude`, the relays that keep sessions alive
-  through a host restart, the host with its helpers, the tools turns run
-  (shells, tests, builds), and MCP servers.
+- **By kind**: stacked bars for memory, CPU and processes, split into each
+  session's `claude`, MCP servers, the tools turns run (shells, tests,
+  builds), the host with its helpers, and the relays that keep sessions alive
+  through a host restart. The memory and CPU bars span the whole of WSL, so
+  other programs (striped) and what is free (the empty track) show beside
+  prifly's share.
 - **MCP servers**: each server, how many copies run, and what they cost. A
   stdio server (configured as a `command`) runs once per session, so 25
   sessions means 25 copies. An HTTP server (a `url`) runs once for all of them

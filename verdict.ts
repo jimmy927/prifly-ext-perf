@@ -7,8 +7,8 @@
  *   memory and I/O `full` the share when every task waited — time lost
  *   outright. Memory also turns red under 10 % available, before stalls.
  * - Windows: the long-standing Performance Monitor guidance — a processor
- *   queue above two per core is a CPU bottleneck; under 10 % of RAM available
- *   is short of memory; disk reads slower than 25 ms are out of spec (15 ms
+ *   queue above two per core is a CPU bottleneck; memory by commit charge and
+ *   page-file writes (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
  *   worth watching). `Pages Input/sec` is left out on purpose: its "under 15"
  *   rule dates from spinning disks, and an NVMe laptop reads thousands a
  *   second with nothing wrong (4,195 measured here, 2026-10-01).
@@ -45,15 +45,32 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
   };
 }
 
+/**
+ * Windows memory, judged by what shows a real shortage: commit charge (can
+ * Windows still hand memory out?) and writes to the page file (is it pushing
+ * memory out to make room?). Available memory counts only when it is truly
+ * low: the WSL VM keeps its own file cache (`autoMemoryReclaim=disabled`), so
+ * 18 % available with 70 % committed and no paging is a calm machine, not a
+ * short one (measured here, 2026-10-01).
+ */
+function windowsMemory(c: WindowsCounters, info: WindowsInfo): Tone {
+  const availableBytes = (c.availableMB ?? 0) * 2 ** 20;
+  const available = info.memTotal > 0 ? availableBytes / info.memTotal : 1;
+  const low =
+    available < 0.05 || availableBytes < 2 ** 30
+      ? "critical"
+      : available < 0.1 || availableBytes < 2 * 2 ** 30
+        ? "warning"
+        : "good";
+  // Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red.
+  return worst(low, band(c.committed ?? 0, 90, 97), band(c.pagesOut ?? 0, 256, 2560));
+}
+
 export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts {
-  const available = info.memTotal > 0 ? ((c.availableMB ?? 0) * 2 ** 20) / info.memTotal : 1;
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
   return {
     cpu: band((c.queue ?? 0) / info.cores, 1, 2),
-    memory: worst(
-      available < 0.1 ? "critical" : available < 0.2 ? "warning" : "good",
-      band(c.committed ?? 0, 90, 97),
-    ),
+    memory: windowsMemory(c, info),
     disk: band(latency, 15, 25),
   };
 }
