@@ -2,59 +2,10 @@
 // seconds while the window is visible; asking is also what tells the
 // extension the window is open, so it reads the process table only then.
 
-const $ = (id) => document.getElementById(id);
+import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
 
 let last = null;
 let polling = null;
-
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (key === "class") node.className = value;
-    else node.setAttribute(key, value);
-  }
-  for (const child of children) {
-    if (child !== null && child !== undefined && child !== false) node.append(child);
-  }
-  return node;
-}
-
-/** In 1024s, as Windows and `.wslconfig` count: a 24 GB limit reads 24 GB. */
-function bytes(n) {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = n;
-  let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const shown = value >= 100 || unit === 0 ? Math.round(value).toString() : value.toPrecision(2);
-  return `${shown} ${units[unit]}`;
-}
-
-const rate = (n) => (n < 1000 ? "0" : `${bytes(n)}/s`);
-const pct = (n) => `${n < 10 ? n.toFixed(1) : Math.round(n)}%`;
-const cores = (n) => (n < 0.05 ? "0" : `${n.toFixed(1)} cores`);
-
-/** A five-minute line of `values`, scaled to `max` (or to its own peak). */
-function spark(values, max) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "spark");
-  svg.setAttribute("viewBox", "0 0 132 28");
-  if (values.length < 2) return svg;
-  const top = max ?? Math.max(...values, 1);
-  const step = 132 / (values.length - 1);
-  const d = values
-    .map(
-      (v, i) =>
-        `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)} ${(26 - (24 * Math.min(v, top)) / top).toFixed(1)}`,
-    )
-    .join(" ");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", d);
-  svg.append(path);
-  return svg;
-}
 
 function metric(tone, name, main, small, line) {
   return el(
@@ -256,20 +207,95 @@ function line(title, count, how) {
   );
 }
 
+// In the order the bars stack them; each kind's colour is `--k-<key>` in style.css.
 const KINDS = [
   ["claude", "claude", "one per session"],
-  ["relay", "Relays", "keep sessions alive through a host restart"],
-  ["host", "Host", "prifly itself, its intent model and helpers"],
-  ["tools", "Tools sessions run", "shells, tests, builds"],
   ["mcp", "MCP servers", "started by each claude"],
+  ["tools", "Tools sessions run", "shells, tests, builds"],
+  ["host", "Host", "prifly itself, its intent model and helpers"],
+  ["relay", "Relays", "keep sessions alive through a host restart"],
 ];
 
-function drawKinds(report) {
-  $("kinds").replaceChildren(
+/** A segment wider than this share carries its name and value; narrower ones only on hover. */
+const LABEL_FROM = 9;
+
+/** One bar: `field` of every kind, stacked in proportion. */
+function segment(key, name, value, whole, format) {
+  const share = whole > 0 ? (100 * value) / whole : 0;
+  const node = el("div", {
+    class: `seg k-${key}`,
+    style: `width:${share}%`,
+    title: `${name}: ${format(value)}`,
+  });
+  if (share > LABEL_FROM) node.append(el("span", {}, `${name} ${format(value)}`));
+  return node;
+}
+
+/**
+ * One bar: `field` of every kind, stacked in proportion. With `machine` — what
+ * the rest of WSL uses and what is free — the bar is the whole of WSL, so
+ * prifly's share of it shows; the free part is the empty track.
+ */
+function stack(report, label, field, format, machine) {
+  const prifly = KINDS.reduce((total, [key]) => total + report.kinds[key][field], 0);
+  const whole = machine === undefined ? prifly : machine.total;
+  const segments = KINDS.map(([key, name]) =>
+    segment(key, name, report.kinds[key][field], whole, format),
+  );
+  if (machine !== undefined) {
+    const other = Math.max(0, machine.used - prifly);
+    segments.push(segment("other", "Other programs", other, whole, format));
+  }
+  const total =
+    machine === undefined
+      ? format(prifly)
+      : `prifly ${format(prifly)} · free ${format(Math.max(0, machine.total - Math.max(machine.used, prifly)))} of ${format(machine.total)}`;
+  return el(
+    "div",
+    { class: "stackrow" },
+    el("div", { class: "stacklabel" }, el("b", {}, label), el("span", { class: "num" }, total)),
+    el("div", { class: "stack" }, ...segments),
+  );
+}
+
+function drawKinds(report, state) {
+  const legend = el(
+    "div",
+    { class: "legend" },
     ...KINDS.map(([key, name, how]) => {
       const u = report.kinds[key];
-      return line([el("b", {}, name), ` · ${how}`], `${u.processes} · ${bytes(u.rss)}`);
+      return el(
+        "div",
+        { class: "lg" },
+        el("i", { class: `k-${key}` }),
+        el("span", {}, el("b", {}, name), el("small", {}, how)),
+        el("span", { class: "num" }, `${u.processes} · ${bytes(u.rss)}`),
+      );
     }),
+    el(
+      "div",
+      { class: "lg" },
+      el("i", { class: "k-other" }),
+      el("span", {}, el("b", {}, "Other programs"), el("small", {}, "the rest of WSL")),
+      el("span"),
+    ),
+    el(
+      "div",
+      { class: "lg" },
+      el("i", { class: "k-free" }),
+      el("span", {}, el("b", {}, "Free"), el("small", {}, "memory and CPU nobody uses")),
+      el("span"),
+    ),
+  );
+  const s = state.linux.sample;
+  // Resident memory overlaps a little (shared pages), so prifly may sum past "used": capped in `stack`.
+  const memory = { total: s.memTotal, used: s.memTotal - s.memAvailable };
+  const cpu = { total: s.cores, used: (s.busy / 100) * s.cores };
+  $("kinds").replaceChildren(
+    stack(report, "Memory", "rss", bytes, memory),
+    stack(report, "CPU", "cpu", (n) => `${n.toFixed(1)} cores`, cpu),
+    stack(report, "Processes", "processes", String),
+    legend,
   );
 }
 
@@ -369,7 +395,7 @@ function drawPrifly(state) {
   const report = state.prifly;
   if (report === null) return;
   drawTiles(report, state);
-  drawKinds(report);
+  drawKinds(report, state);
   drawMcp(report);
   drawSessions(report, state);
 }
