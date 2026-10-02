@@ -431,6 +431,14 @@ tr.group td {
   font-size: 12px;
   grid-column: 1 / -1;
 }
+.line.where {
+  padding-left: 28px;
+}
+.line.where .how {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 [hidden] {
   display: none;
 }

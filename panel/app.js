@@ -5,6 +5,7 @@
 
 import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
+import { drawMcp } from "./mcp.js";
 
 let last = null;
 
@@ -197,16 +198,6 @@ function drawTiles(report, state) {
   );
 }
 
-function line(title, count, how) {
-  return el(
-    "div",
-    { class: "line" },
-    el("span", {}, ...title),
-    el("span", { class: "num" }, count),
-    how && el("span", { class: "how" }, how),
-  );
-}
-
 // In the order the bars stack them; each kind's colour is `--k-<key>` in style.css.
 const KINDS = [
   ["claude", "claude", "one per session"],
@@ -297,34 +288,6 @@ function drawKinds(report, state) {
     stack(report, "Processes", "processes", String),
     legend,
   );
-}
-
-function mcpLine(m) {
-  if (m.transport === "http") {
-    return line(
-      [el("b", {}, m.name), " ", el("span", { class: "chip" }, "shared")],
-      "0 extra",
-      "HTTP: one server for every session",
-    );
-  }
-  const chip = el(
-    "span",
-    { class: `chip ${m.copies > 1 ? "many" : ""}` },
-    `${m.copies} ${m.copies === 1 ? "copy" : "copies"}`,
-  );
-  const where = {
-    user: "~/.claude.json, every project",
-    local: "~/.claude.json, one folder",
-    project: ".mcp.json",
-    running: "not in a config read here",
-  }[m.scope];
-  const how = `stdio: one copy per session · ${where}${m.copies > 1 ? " · one shared HTTP server would do" : ""}`;
-  return line([el("b", {}, m.name), " ", chip], `${m.processes} · ${bytes(m.rss)}`, how);
-}
-
-function drawMcp(report) {
-  const rows = report.mcp.map(mcpLine);
-  $("mcp").replaceChildren(...(rows.length > 0 ? rows : [el("p", {}, "No MCP servers run here.")]));
 }
 
 function sessionRow(s, maxCpu) {

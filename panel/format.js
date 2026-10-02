@@ -14,6 +14,17 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/** One row of a card: a title, a number on the right and a muted line under both. */
+export function line(title, count, how) {
+  return el(
+    "div",
+    { class: "line" },
+    el("span", {}, ...title),
+    el("span", { class: "num" }, count),
+    how && el("span", { class: "how" }, how),
+  );
+}
+
 /** In 1024s, as Windows and `.wslconfig` count: a 24 GB limit reads 24 GB. */
 export function bytes(n) {
   const units = ["B", "KB", "MB", "GB", "TB"];
