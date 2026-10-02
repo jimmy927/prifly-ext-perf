@@ -93,7 +93,7 @@ function point(info: WindowsInfo | null, s: LinuxSample, c: WindowsCounters | nu
   return {
     at: s.at,
     linux: {
-      cpu: s.cpu?.some.avg10 ?? s.busy,
+      cpu: s.cpu?.some ?? s.busy,
       memory: s.memTotal > 0 ? 100 * (1 - s.memAvailable / s.memTotal) : 0,
       disk: s.diskRead + s.diskWrite,
     },

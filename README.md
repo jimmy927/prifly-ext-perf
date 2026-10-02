@@ -62,11 +62,11 @@ process that belongs to a prifly session is named with that session.
 
 | | Orange | Red |
 |---|---|---|
-| WSL CPU: tasks waiting for a core (PSI `cpu some avg10`) | 10 % of the time | 40 % |
-| WSL memory: every task stalled on memory (PSI `memory full avg10`) | 5 % | 20 % |
-| WSL memory: some task stalled on memory (PSI `memory some avg10`) | 20 % | — |
+| WSL CPU: tasks waiting for a core (PSI `cpu some`) | 10 % of the time | 40 % |
+| WSL memory: every task stalled on memory (PSI `memory full`) | 5 % | 20 % |
+| WSL memory: some task stalled on memory (PSI `memory some`) | 20 % | — |
 | WSL memory: available | under 20 % | under 10 % |
-| WSL disk: every task stalled on disk (PSI `io full avg10`) | 5 % | 20 % |
+| WSL disk: every task stalled on disk (PSI `io full`) | 5 % | 20 % |
 | Windows CPU: processor queue per core | 1 | 2 |
 | Windows memory: committed | 90 % | 97 % |
 | Windows memory: writes to the page file | 1 MB/s | 10 MB/s |
@@ -76,7 +76,8 @@ process that belongs to a prifly session is named with that session.
 On Linux the colours come from [pressure stall
 information](https://docs.kernel.org/accounting/psi.html), not from how busy
 something is. PSI measures how long tasks actually waited, which is what makes
-a machine feel slow. Load average is shown without a colour because Linux also
+a machine feel slow. The share is taken from PSI's time stalled since boot at
+both ends of the window you pick, so it covers exactly that window. Load average is shown without a colour because Linux also
 counts tasks waiting on disk in it. Without PSI, a run queue of more than twice
 the cores stands in for CPU.
 

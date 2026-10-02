@@ -36,9 +36,7 @@ function linuxCard(linux) {
   const s = linux.sample;
   const v = linux.verdicts;
   const waited =
-    s.cpu === null
-      ? `${pct(s.busy)} busy`
-      : `Waited for a core ${pct(s.cpu.some.avg10)} of the time`;
+    s.cpu === null ? `${pct(s.busy)} busy` : `Waited for a core ${pct(s.cpu.some)} of the time`;
   const swap = s.swapTotal > 0 ? ` · swap ${bytes(s.swapUsed)} used` : " · no swap";
   return hostCard(linux.name, `${s.cores} cores · ${bytes(s.memTotal)}`, [
     metric(
@@ -52,14 +50,14 @@ function linuxCard(linux) {
       v.memory,
       "Memory",
       `${bytes(s.memAvailable)} free of ${bytes(s.memTotal)}`,
-      `All tasks waited for memory ${pct(s.memory?.full.avg10 ?? 0)} of the time${swap}`,
+      `All tasks waited for memory ${pct(s.memory?.full ?? 0)} of the time${swap}`,
       spark(history("linux", "memory"), 100),
     ),
     metric(
       v.disk,
       "Disk I/O",
       `${rate(s.diskRead)} read · ${rate(s.diskWrite)} write`,
-      `All tasks waited for disk ${pct(s.io?.full.avg10 ?? 0)} of the time`,
+      `All tasks waited for disk ${pct(s.io?.full ?? 0)} of the time`,
       spark(history("linux", "disk")),
     ),
     metric(

@@ -12,9 +12,16 @@
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 
-/** One line of a pressure file: the share of the last 10 s and 60 s, in percent. */
-export type Stall = { avg10: number; avg60: number };
+/**
+ * One line of a pressure file: the kernel's share of the last 10 s, in
+ * percent, and the time stalled since boot, in microseconds. Two reads of
+ * `total` give the exact share between them, over any window.
+ */
+export type Stall = { avg10: number; total: number };
 export type Pressure = { some: Stall; full: Stall };
+
+/** The share of a window, in percent, that some task (`some`) or every task (`full`) stalled. */
+export type Stalls = { some: number; full: number };
 
 export type LinuxSample = {
   at: number;
@@ -31,18 +38,18 @@ export type LinuxSample = {
   /** Bytes per second read from and written to disk over the window. */
   diskRead: number;
   diskWrite: number;
-  cpu: Pressure | null;
-  memory: Pressure | null;
-  io: Pressure | null;
+  cpu: Stalls | null;
+  memory: Stalls | null;
+  io: Stalls | null;
 };
 
-const NO_STALL: Stall = { avg10: 0, avg60: 0 };
+const NO_STALL: Stall = { avg10: 0, total: 0 };
 
 function stallOf(line: string | undefined): Stall {
   if (line === undefined) return NO_STALL;
   const avg10 = /avg10=([\d.]+)/.exec(line)?.[1];
-  const avg60 = /avg60=([\d.]+)/.exec(line)?.[1];
-  return { avg10: Number(avg10 ?? 0), avg60: Number(avg60 ?? 0) };
+  const total = /total=(\d+)/.exec(line)?.[1];
+  return { avg10: Number(avg10 ?? 0), total: Number(total ?? 0) };
 }
 
 /** A `/proc/pressure/*` file's text: its `some` and `full` lines. */
@@ -98,13 +105,19 @@ function vmstat(): { pgpgin: number; pgpgout: number } {
  * One read of Linux: the counters as they stand (cumulative since boot, so any
  * two reads give an exact average between them) and the levels beside them.
  */
-export type LinuxRaw = Omit<LinuxSample, "busy" | "diskRead" | "diskWrite"> & {
+export type LinuxRaw = Omit<
+  LinuxSample,
+  "busy" | "diskRead" | "diskWrite" | "cpu" | "memory" | "io"
+> & {
   /** Jiffies on all cores, and the idle share of them. */
   total: number;
   idle: number;
   /** Pages in and out, in kB. */
   pgpgin: number;
   pgpgout: number;
+  cpu: Pressure | null;
+  memory: Pressure | null;
+  io: Pressure | null;
 };
 
 /** Reads Linux now. Rates are made from two of these (`average.ts`). */

@@ -131,15 +131,24 @@ test("levels are the mean of the samples in the window", () => {
   expect(average?.value.load[0]).toBeCloseTo(8.5, 6);
 });
 
-test("pressure is averaged, and stays absent without PSI", () => {
-  const stall = (avg10: number) => ({
-    some: { avg10, avg60: 0 },
-    full: { avg10: avg10 / 2, avg60: 0 },
-  });
-  const ring = linuxRing(2, (second) => ({ cpu: stall(second * 10) }));
-  expect(averageLinux(ring, 2)?.value.cpu?.some.avg10).toBeCloseTo(15, 6);
-  expect(averageLinux(ring, 2)?.value.cpu?.full.avg10).toBeCloseTo(7.5, 6);
+test("time stalled is exact over the window, and stays absent without PSI", () => {
+  // Calm but for 2 s fully stalled at seconds 29-30; the kernel's avg10 says 99 throughout.
+  const stalled = (second: number) => Math.min(Math.max(second - 28, 0), 2) * 1_000_000;
+  const ring = linuxRing(30, (second) => ({
+    cpu: {
+      some: { avg10: 99, total: stalled(second) },
+      full: { avg10: 99, total: stalled(second) / 2 },
+    },
+  }));
+  expect(averageLinux(ring, 30)?.value.cpu?.some).toBeCloseTo(100 / 15, 6);
+  expect(averageLinux(ring, 30)?.value.cpu?.full).toBeCloseTo(100 / 30, 6);
+  expect(averageLinux(ring, 1)?.value.cpu?.some).toBeCloseTo(100, 6);
   expect(averageLinux(ring, 2)?.value.memory).toBeNull();
+});
+
+test("one read has no window yet, so it takes the kernel's last 10 s", () => {
+  const ring = [raw(0, { cpu: { some: { avg10: 12, total: 5 }, full: { avg10: 3, total: 1 } } })];
+  expect(averageLinux(ring, 30)?.value.cpu).toEqual({ some: 12, full: 3 });
 });
 
 test("Windows counters average over the lines that had them", () => {

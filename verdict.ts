@@ -37,16 +37,16 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
   const available = s.memTotal > 0 ? s.memAvailable / s.memTotal : 1;
   return {
     // Without PSI, a run queue twice the cores stands in.
-    cpu: s.cpu === null ? band(s.runnable / s.cores, 1, 2) : band(s.cpu.some.avg10, 10, 40),
+    cpu: s.cpu === null ? band(s.runnable / s.cores, 1, 2) : band(s.cpu.some, 10, 40),
     memory: worst(
       // A memory stall also counts reading dropped file pages back and small
       // reclaim pauses, which a healthy machine has: 0.6 % `full` with 40 % free
       // read "short" on 2026-10-01. Only stalls a person would feel count.
-      band(s.memory?.full.avg10 ?? 0, 5, 20),
-      band(s.memory?.some.avg10 ?? 0, 20, Number.POSITIVE_INFINITY),
+      band(s.memory?.full ?? 0, 5, 20),
+      band(s.memory?.some ?? 0, 20, Number.POSITIVE_INFINITY),
       available < 0.1 ? "critical" : available < 0.2 ? "warning" : "good",
     ),
-    disk: band(s.io?.full.avg10 ?? 0, 5, 20),
+    disk: band(s.io?.full ?? 0, 5, 20),
   };
 }
 

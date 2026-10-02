@@ -9,8 +9,8 @@ describe("Linux files", () => {
       "some avg10=41.50 avg60=12.00 avg300=3.10 total=45743768\n" +
       "full avg10=0.00 avg60=0.10 avg300=0.00 total=0\n";
     expect(parsePressure(text)).toEqual({
-      some: { avg10: 41.5, avg60: 12 },
-      full: { avg10: 0, avg60: 0.1 },
+      some: { avg10: 41.5, total: 45743768 },
+      full: { avg10: 0, total: 0 },
     });
   });
 

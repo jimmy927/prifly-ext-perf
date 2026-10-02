@@ -2,10 +2,10 @@
  * What the panel shows is the average over a window, so a number does not
  * jitter from one second to the next. Two kinds, made two ways:
  *
- * - Rates (CPU, disk, `busy`) are exact: the counter now minus the counter at
- *   the window's start, over the time between. A 2 s spike in a 30 s window
- *   counts for 1/15, however the seconds were sampled.
- * - Levels (memory available, run queue, pressure, load, Windows' counters)
+ * - Rates (CPU, disk, `busy`, time stalled) are exact: the counter now minus
+ *   the counter at the window's start, over the time between. A 2 s spike in a
+ *   30 s window counts for 1/15, however the seconds were sampled.
+ * - Levels (memory available, run queue, load, Windows' counters)
  *   are the mean of the one-second samples in the window.
  *
  * A window that has not filled yet averages what there is; `covered` says how
@@ -15,7 +15,7 @@
 import { type Proc, type ProcSnapshot, TICKS_PER_SECOND, type Totals } from "./procs";
 import { spanOf } from "./ring";
 import { COUNTERS, type Field, type WindowsCounters } from "./windows";
-import type { LinuxRaw, LinuxSample, Pressure } from "./wsl";
+import type { LinuxRaw, LinuxSample, Pressure, Stalls } from "./wsl";
 
 /** The windows the panel offers, in seconds. */
 export const WINDOWS = [1, 2, 5, 10, 30, 60, 300];
@@ -40,13 +40,20 @@ const mean = (values: number[]): number =>
 export const rateOf = (before: number, after: number, seconds: number): number =>
   seconds > 0 ? Math.max(0, after - before) / seconds : 0;
 
-function averagePressure(list: (Pressure | null)[]): Pressure | null {
-  const have = list.filter((p): p is Pressure => p !== null);
-  if (have.length === 0) return null;
-  const of = (pick: (p: Pressure) => number) => mean(have.map(pick));
+/**
+ * The share of the window stalled, from the time stalled since boot at both
+ * ends: exact for 1 s as for 5 min. A window of one read has no two ends, so
+ * it takes the kernel's own last 10 s.
+ */
+function stalledOver(start: Pressure | null, end: Pressure | null, seconds: number): Stalls | null {
+  if (end === null) return null;
+  if (start === null || seconds <= 0) return { some: end.some.avg10, full: end.full.avg10 };
+  // Microseconds stalled per second, over 10,000, is percent.
+  const share = (before: number, after: number) =>
+    Math.min(100, rateOf(before, after, seconds) / 10_000);
   return {
-    some: { avg10: of((p) => p.some.avg10), avg60: of((p) => p.some.avg60) },
-    full: { avg10: of((p) => p.full.avg10), avg60: of((p) => p.full.avg60) },
+    some: share(start.some.total, end.some.total),
+    full: share(start.full.total, end.full.total),
   };
 }
 
@@ -74,9 +81,9 @@ export function averageLinux(
     // pgpgin and pgpgout count kB.
     diskRead: rateOf(start.pgpgin, end.pgpgin, span.seconds) * 1024,
     diskWrite: rateOf(start.pgpgout, end.pgpgout, span.seconds) * 1024,
-    cpu: averagePressure(inside.map((raw) => raw.cpu)),
-    memory: averagePressure(inside.map((raw) => raw.memory)),
-    io: averagePressure(inside.map((raw) => raw.io)),
+    cpu: stalledOver(start.cpu, end.cpu, span.seconds),
+    memory: stalledOver(start.memory, end.memory, span.seconds),
+    io: stalledOver(start.io, end.io, span.seconds),
   };
   return { value, covered: span.seconds };
 }

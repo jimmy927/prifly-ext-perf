@@ -3,7 +3,7 @@ import { headline, linuxVerdicts, windowsVerdicts } from "../verdict";
 import type { WindowsCounters } from "../windows";
 import type { LinuxSample } from "../wsl";
 
-const calm = { some: { avg10: 0, avg60: 0 }, full: { avg10: 0, avg60: 0 } };
+const calm = { some: 0, full: 0 };
 const GB = 2 ** 30;
 
 function linux(over: Partial<LinuxSample>): LinuxSample {
@@ -32,19 +32,19 @@ describe("Linux", () => {
   });
 
   test("tasks stalled on CPU 41 % of the time is out of CPU", () => {
-    const stalled = { ...calm, some: { avg10: 41, avg60: 20 } };
+    const stalled = { ...calm, some: 41 };
     expect(linuxVerdicts(linux({ cpu: stalled })).cpu).toBe("critical");
   });
 
   test("40 % free with stalls of 0.6 % is fine (2026-10-01)", () => {
-    const light = { some: { avg10: 1.2, avg60: 1 }, full: { avg10: 0.6, avg60: 0.4 } };
+    const light = { some: 1.2, full: 0.6 };
     expect(linuxVerdicts(linux({ memAvailable: 9.2 * GB, memory: light })).memory).toBe("good");
   });
 
   test("stalls on memory a person would feel are short, thrashing is out", () => {
-    const some = { some: { avg10: 25, avg60: 10 }, full: { avg10: 2, avg60: 1 } };
-    const full = { some: { avg10: 30, avg60: 20 }, full: { avg10: 8, avg60: 5 } };
-    const thrash = { some: { avg10: 60, avg60: 50 }, full: { avg10: 35, avg60: 30 } };
+    const some = { some: 25, full: 2 };
+    const full = { some: 30, full: 8 };
+    const thrash = { some: 60, full: 35 };
     expect(linuxVerdicts(linux({ memory: some })).memory).toBe("warning");
     expect(linuxVerdicts(linux({ memory: full })).memory).toBe("warning");
     expect(linuxVerdicts(linux({ memory: thrash })).memory).toBe("critical");
