@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { McpConfig, marksOf, serverOf } from "../mcp";
-import { commandLabel, ownersOf, priflyReport } from "../prifly";
+import { commandLabel, ownerIdsOf, ownersOf, priflyReport, toolUseOf } from "../prifly";
 import type { Proc } from "../procs";
 
 const PLAYWRIGHT = {
@@ -89,5 +89,28 @@ describe("prifly's processes", () => {
   test("a tool's process is owned by its session", () => {
     expect(ownersOf(all, report.sessions).get(pytest.pid)).toBe("odi-11");
     expect(ownersOf(all, report.sessions).has(stranger.pid)).toBe(false);
+  });
+
+  test("a process is owned by its relay's session id, even a relay that hangs under init", () => {
+    const owners = ownerIdsOf(all);
+    expect(relay.ppid).toBe(1);
+    for (const owned of [relay, claude, npm, node, shell, pytest]) {
+      expect(owners.get(owned.pid)).toBe("aaaaaaaa-1111");
+    }
+    for (const other of [host, worker, namer, stranger]) expect(owners.has(other.pid)).toBe(false);
+  });
+
+  test("each session's tools are summed, without its claude or MCP servers", () => {
+    const busy = proc(shell.pid, ["python3", "-m", "pytest", "-n", "6"], 5);
+    const use = toolUseOf([...all, busy], known, config).get("aaaaaaaa-1111");
+    // The shell (0) and both pytests (3 and 5); the claude and playwright are not tools.
+    expect(use?.cores).toBe(8);
+    expect(use?.rss).toBe(3 * 2 ** 20);
+    expect(use?.doing).toBe("pytest -n 6");
+    expect(use?.pid).toBe(busy.pid);
+  });
+
+  test("a session with no tools is absent", () => {
+    expect(toolUseOf([relay, claude], known, config).size).toBe(0);
   });
 });

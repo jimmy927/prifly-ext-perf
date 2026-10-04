@@ -117,6 +117,29 @@ nothing wrong (4,195 measured on the machine this was written on).
 Cloud sessions run on Anthropic's machines and their MCP servers run in that
 sandbox, so they add no processes here. They are only counted.
 
+## Nanny
+
+When WSL's CPU or memory has been turned orange or red by sessions' tools, the
+extension says whose. On 2026-10-04 the laptop ran at load 111–139 on 16 cores
+because benchmarks, `bun test` gates and `ty --watch` from different sessions
+piled up, and only the reader noticed. It reads the process table every 5 s
+while the 10 s verdict is not green (window open or not), averages it over 30 s,
+and sums what each session's *tools* use: the shells, tests and builds its
+turns run, not its `claude` or MCP servers.
+
+| | When | What |
+|---|---|---|
+| Chip | WSL CPU or memory is orange or red | The 3 sessions using most, each at least 1 core (CPU) or 10 % of the RAM (memory), get a chip on their row: *Using 6.4 of 16 cores: bun test*, with why, the busiest program and its pid, and when the session was last told. It stays until WSL has been green for 60 s. |
+| Notice to a session | CPU or memory red for 30 s without a break | The one session using most (cores for CPU, RAM for memory, at least the chip minimum) is asked to let its work finish and start nothing heavy, or to stop a benchmark, build or training run and offer the reader a rented machine. At most once per 10 min per session. |
+| Note to you | CPU or memory red for 3 min, or red for 30 s with more cores used outside every session than by the busiest one | A notice in prifly, linked to the busiest session. At most once per 10 min. |
+
+A notice goes **only to a session that is working**. prifly's `prompt` resumes
+a session that has ended and clears its snooze, so an idle, waiting or ended
+session is never messaged, however much it used a while ago; its chip and the
+note to you still show. If most of the load belongs to no session (Docker,
+Windows-side tools, something started by hand), no session is told and only
+you are.
+
 ## Where the numbers come from
 
 - **WSL**: `/proc/pressure/{cpu,memory,io}`, `/proc/stat`, `/proc/meminfo`,
@@ -128,7 +151,8 @@ sandbox, so they add no processes here. They are only counted.
   machine's name, cores and memory once.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
   while the window is open (it asks every second; 10 s without, and it counts as closed), the last five
-  minutes kept. The extension runs inside the host, so the host is its own
+  minutes kept. With the window closed they are read every 5 s, and only while
+  WSL's CPU or memory is not green, 30 s kept, for the nanny. The extension runs inside the host, so the host is its own
   process. Relays outlive the host, so after a restart they belong to init
   and are found by their command line instead.
 - **MCP servers**: matched against the `mcpServers` in `~/.claude.json` (user

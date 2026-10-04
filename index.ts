@@ -8,13 +8,25 @@
  * Linux is read every second, always: a few small files, for the chip.
  * Windows' counters come from one `typeperf` that stays running. The process
  * table, Windows' busiest processes and the cloud sessions are read only
- * while the window is open, since nothing else shows them. Every number the
- * window shows is an average over the window it asked for (`average.ts`).
+ * while the window is open, since nothing else shows them — except that the
+ * process table is also read every 5 s whenever WSL's CPU or memory is not
+ * green, for the nanny (`nanny.ts`), which names the sessions whose tools
+ * cause the load. Every number the window shows is an average over the window
+ * it asked for (`average.ts`).
  */
 
 import { averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import { McpConfig } from "./mcp";
-import { commandLabel, ownersOf, type PriflyReport, priflyReport } from "./prifly";
+import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
+import {
+  commandLabel,
+  ownerIdsOf,
+  ownersOf,
+  type PriflyReport,
+  priflyReport,
+  type ToolUse,
+  toolUseOf,
+} from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { type Proc, type ProcSnapshot, readProcs } from "./procs";
 import { endAt, HOUR, keep, windowEnds } from "./ring";
@@ -39,6 +51,13 @@ const CHIP_WINDOW = 10;
  * Linux and Windows ones (a process table is hundreds of entries a second).
  */
 const PROCS_KEEP = 310;
+/** While only the nanny reads them: every 5 s, 30 s kept, and averaged over the 30 s. */
+const NANNY_EVERY = 5_000;
+const NANNY_KEEP = 30;
+/** A table older than this is from before a gap, and says nothing about now. */
+const NANNY_STALE = 15_000;
+/** The fewest seconds a table must span for its rates to mean anything. */
+const NANNY_MIN_SPAN = 3;
 /** The window asks every second; it counts as open while it asked within this. */
 const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
@@ -66,7 +85,14 @@ type State = {
   askedAt: number;
   /** Seconds of the window it asked for last. */
   askedWindow: number;
+  /** What the status bar and the session chips show now, as a key: sent again only when it changes. */
   chip: string;
+  /** What the nanny remembers between seconds (`nanny.ts`). */
+  nanny: NannyMemory;
+  /** Each session's tools, from the latest process table the nanny averaged. */
+  nannyUse: { at: number; use: Map<string, ToolUse>; unowned: number } | null;
+  /** The sessions with a chip now, to log only when they change. */
+  chipped: string;
 };
 
 let state: State | null = null;
@@ -125,37 +151,44 @@ const ICON_TONE: Record<Tone, Decoration["tone"]> = {
   critical: "critical",
 };
 
-/** The status-bar chip: shown again only when what it says changed. */
-function showChip(current: State): void {
-  const linux = averageLinux(current.linux, CHIP_WINDOW);
-  if (linux === null) return;
+/** The status-bar item: the Performance button, coloured by the worst of the three. */
+function statusItem(current: State, linux: Verdicts): Decoration {
   const windows = windowsAverage(current, CHIP_WINDOW);
-  const judged = places(
-    current,
-    linuxVerdicts(linux.value),
-    windowsVerdictsOf(current.info, windows?.value ?? null),
-  );
+  const judged = places(current, linux, windowsVerdictsOf(current.info, windows?.value ?? null));
   const { tone, text } = headline(judged);
   const label = tone === "good" ? "Fine" : (text.split(".")[0] ?? text);
   const details = judged.map(
     ({ name, verdicts }) =>
       `${name}: CPU ${verdicts.cpu}, memory ${verdicts.memory}, disk ${verdicts.disk}`,
   );
-  const key = `${tone}|${label}|${details.join("|")}`;
+  return {
+    key: "perf",
+    icon: "activity",
+    label,
+    tone: ICON_TONE[tone],
+    // The label is the headline's first sentence: repeated only when there is more to it.
+    details: text === `${label}.` ? details : [text, ...details],
+    // Drawn as the Performance button's own colour, not a chip beside it.
+    panel: "perf",
+  };
+}
+
+/**
+ * Everything this extension shows, in one call, since `show` replaces it all:
+ * the status-bar item, unclaimed, and the nanny's chips on their sessions.
+ * Sent again only when something in it changed.
+ */
+function showAll(current: State, linux: Verdicts, chips: Record<string, Decoration[]>): void {
+  const item = statusItem(current, linux);
+  const key = JSON.stringify([item, chips]);
   if (key === current.chip) return;
   current.chip = key;
-  current.api.show({}, [
-    {
-      key: "perf",
-      icon: "activity",
-      label,
-      tone: ICON_TONE[tone],
-      // The label is the headline's first sentence: repeated only when there is more to it.
-      details: text === `${label}.` ? details : [text, ...details],
-      // Drawn as the Performance button's own colour, not a chip beside it.
-      panel: "perf",
-    },
-  ]);
+  const ids = Object.keys(chips).sort().join(",");
+  if (ids !== current.chipped) {
+    current.chipped = ids;
+    current.api.log("nanny_chips", { sessions: ids, count: Object.keys(chips).length });
+  }
+  current.api.show(chips, [item]);
 }
 
 function open(current: State): boolean {
@@ -188,10 +221,104 @@ function refreshWhileOpen(current: State): void {
   }
 }
 
+/**
+ * While WSL's CPU or memory is not green and the window is closed, nobody else
+ * reads the process table: read it every 5 s, and keep 30 s of it. After a
+ * gap the old tables would stretch the average over the gap, so they go.
+ */
+function readForNanny(current: State, verdicts: Verdicts, now: number): void {
+  if (verdicts.cpu === "good" && verdicts.memory === "good") return;
+  const last = current.procs.at(-1);
+  if (last !== undefined && now - last.at < NANNY_EVERY - 250) return;
+  if (last !== undefined && now - last.at > NANNY_STALE) current.procs.length = 0;
+  keep(current.procs, readProcs(), NANNY_KEEP);
+}
+
+/**
+ * Each session's tools, and the cores no session owns, from the process table
+ * averaged over its last 30 s. Worked out once per table, not once a second.
+ * Null while the table is missing, stale or too short for its rates to mean
+ * anything: a nanny that cannot see says nothing.
+ */
+function nannyUse(current: State, now: number): State["nannyUse"] {
+  const last = current.procs.at(-1);
+  if (last === undefined || now - last.at > NANNY_STALE) return null;
+  if (current.nannyUse?.at === last.at) return current.nannyUse;
+  const procs = averageProcs(current.procs, NANNY_KEEP);
+  if (procs === null || procs.covered < NANNY_MIN_SPAN) return null;
+  // The machine's busy cores over the same stretch, less every process some session owns:
+  // what is left is Docker, Windows-side work, or something started by hand.
+  const linux = averageLinux(current.linux, procs.covered);
+  const owners = ownerIdsOf(procs.value);
+  const owned = procs.value.reduce((sum, p) => sum + (owners.has(p.pid) ? p.cpu : 0), 0);
+  const busy = linux === null ? 0 : (linux.value.busy * linux.value.cores) / 100;
+  current.nannyUse = {
+    at: last.at,
+    use: toolUseOf(procs.value, current.api.sessions(), new McpConfig()),
+    unowned: Math.max(0, busy - owned),
+  };
+  return current.nannyUse;
+}
+
+/** The sessions the host knows that run tools, with their state as it is now. */
+function nannySessions(current: State, now: number): { sessions: NannySession[]; unowned: number } {
+  const data = nannyUse(current, now);
+  if (data === null) return { sessions: [], unowned: 0 };
+  const sessions = current.api.sessions().flatMap((session) => {
+    const use = data.use.get(session.id);
+    return use === undefined
+      ? []
+      : [{ id: session.id, title: session.title, state: session.state, ...use }];
+  });
+  return { sessions, unowned: data.unowned };
+}
+
+/** Tells a session to ease off. A failure is logged, never thrown: the nanny must go on. */
+async function sendNotice(current: State, notice: Notice): Promise<void> {
+  current.api.log("nanny_notice", { session: notice.session, text: notice.text });
+  try {
+    const { delivered } = await current.api.prompt(notice.session, notice.text);
+    if (!delivered) current.api.log("nanny_notice_failed", { session: notice.session });
+  } catch (error) {
+    current.api.log("nanny_notice_failed", { session: notice.session, error: String(error) });
+  }
+}
+
+/** One second of the nanny: judge, carry out what it decided, and return the chips to show. */
+function nannyStep(current: State, linux: LinuxSample, verdicts: Verdicts) {
+  const now = Date.now();
+  if (!open(current)) readForNanny(current, verdicts, now);
+  const { sessions, unowned } = nannySessions(current, now);
+  const decision = decide(
+    current.nanny,
+    {
+      verdicts,
+      psi: { cpu: linux.cpu?.some ?? 0, memory: linux.memory?.full ?? 0 },
+      cores: linux.cores,
+      memTotal: linux.memTotal,
+      sessions,
+      unowned,
+    },
+    now,
+  );
+  current.nanny = decision.memory;
+  for (const notice of decision.notices) void sendNotice(current, notice);
+  if (decision.notify !== null) {
+    const { text, session } = decision.notify;
+    current.api.log("nanny_notify", { text, session: session ?? null });
+    const tone = "warning";
+    current.api.notify(text, session === undefined ? { tone } : { tone, session });
+  }
+  return decision.chips;
+}
+
 function tick(current: State): void {
   keep(current.linux, readLinux(), HOUR);
-  showChip(current);
   if (open(current)) refreshWhileOpen(current);
+  const linux = averageLinux(current.linux, CHIP_WINDOW);
+  if (linux === null) return;
+  const verdicts = linuxVerdicts(linux.value);
+  showAll(current, verdicts, nannyStep(current, linux.value, verdicts));
 }
 
 async function learnWindows(current: State): Promise<void> {
@@ -218,6 +345,9 @@ export function activate(api: ExtensionApi): () => void {
     askedAt: 0,
     askedWindow: 0,
     chip: "",
+    nanny: newNannyMemory(),
+    nannyUse: null,
+    chipped: "",
   };
   state = current;
   if (windows !== null) {

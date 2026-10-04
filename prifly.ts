@@ -94,8 +94,13 @@ export function commandLabel(argv: string[]): string {
 }
 
 /** The busiest non-shell program among a turn's tools. */
+function busiestOf(tools: Proc[]): Proc | undefined {
+  return tools.filter((proc) => !SHELLS.has(proc.comm)).sort((a, b) => b.cpu - a.cpu)[0];
+}
+
+/** The busiest non-shell program among a turn's tools, named; "a shell command" when all are shells. */
 function doingOf(tools: Proc[]): string {
-  const busiest = tools.filter((proc) => !SHELLS.has(proc.comm)).sort((a, b) => b.cpu - a.cpu)[0];
+  const busiest = busiestOf(tools);
   if (busiest !== undefined) return commandLabel(busiest.argv);
   return tools.length > 0 ? "a shell command" : "";
 }
@@ -146,7 +151,13 @@ function readClaude(acc: Acc, tree: Tree, claude: Proc, row: SessionRow): Proc[]
   return tools;
 }
 
-function readRelay(acc: Acc, tree: Tree, relay: Proc, known: Map<string, ExtensionSession>) {
+/** One session's row, and the processes of its turns' tools that it was made from. */
+function readRelay(
+  acc: Acc,
+  tree: Tree,
+  relay: Proc,
+  known: Map<string, ExtensionSession>,
+): { row: SessionRow; tools: Proc[] } {
   const id = relay.argv.at(-1) ?? "";
   const session = known.get(id);
   const row: SessionRow = {
@@ -171,7 +182,7 @@ function readRelay(acc: Acc, tree: Tree, relay: Proc, known: Map<string, Extensi
       }
   }
   row.doing = doingOf(tools);
-  return row;
+  return { row, tools };
 }
 
 /** The HTTP servers configured anywhere a running session looks: shared, so no copies. */
@@ -184,20 +195,77 @@ function httpServers(acc: Acc, sessions: SessionRow[]): void {
   }
 }
 
-/** The session each process works for, by walking up to its relay; absent for the rest. */
-export function ownersOf(procs: Proc[], sessions: SessionRow[]): Map<number, string> {
+/**
+ * The id of the session each process works for: the last argument of the
+ * relay above it, found by walking up the tree. A relay that outlived the host
+ * hangs under init (ppid 1) and is still a relay, so it is found all the same.
+ * A process with no relay above it is absent.
+ */
+export function ownerIdsOf(procs: Proc[]): Map<number, string> {
   const byPid = new Map(procs.map((proc) => [proc.pid, proc]));
-  const titles = new Map(sessions.map((row) => [row.id, row.title]));
   const owners = new Map<number, string>();
   for (const proc of procs) {
     for (let at: Proc | undefined = proc; at !== undefined; at = byPid.get(at.ppid)) {
       if (!isRelay(at)) continue;
-      const title = titles.get(at.argv.at(-1) ?? "");
-      if (title !== undefined) owners.set(proc.pid, title);
+      owners.set(proc.pid, at.argv.at(-1) ?? "");
       break;
     }
   }
   return owners;
+}
+
+/** The session each process works for, by walking up to its relay; absent for the rest. */
+export function ownersOf(procs: Proc[], sessions: SessionRow[]): Map<number, string> {
+  const titles = new Map(sessions.map((row) => [row.id, row.title]));
+  const owners = new Map<number, string>();
+  for (const [pid, id] of ownerIdsOf(procs)) {
+    const title = titles.get(id);
+    if (title !== undefined) owners.set(pid, title);
+  }
+  return owners;
+}
+
+/** What one session's tools use: cores and memory summed, and its busiest program. */
+export type ToolUse = {
+  /** Cores in use, summed over its tools (not its `claude` or MCP servers). */
+  cores: number;
+  /** Resident memory of its tools, bytes. */
+  rss: number;
+  /** The busiest program, as `commandLabel` names it, or "". */
+  doing: string;
+  /** That program's pid, or 0 when there is none. */
+  pid: number;
+};
+
+/**
+ * Each session's tool CPU and memory, by session id, from a table already
+ * averaged over a window (`averageProcs`). Tools are what the panel's "doing"
+ * column looks at: what a turn runs, not the `claude` or its MCP servers. A
+ * session with no tools is absent.
+ */
+export function toolUseOf(
+  procs: Proc[],
+  known: ExtensionSession[],
+  config: McpConfig,
+): Map<string, ToolUse> {
+  const tree = treeOf(procs);
+  const acc: Acc = {
+    kinds: { host: empty(), relay: empty(), claude: empty(), mcp: empty(), tools: empty() },
+    mcp: new Map(),
+    config,
+  };
+  const byId = new Map(known.map((session) => [session.id, session]));
+  const out = new Map<string, ToolUse>();
+  for (const relay of procs.filter(isRelay)) {
+    const { row, tools } = readRelay(acc, tree, relay, byId);
+    if (tools.length === 0) continue;
+    const busiest = busiestOf(tools) ?? [...tools].sort((a, b) => b.cpu - a.cpu)[0];
+    const use = out.get(row.id) ?? { cores: 0, rss: 0, doing: row.doing, pid: busiest?.pid ?? 0 };
+    use.cores += tools.reduce((sum, proc) => sum + proc.cpu, 0);
+    use.rss += tools.reduce((sum, proc) => sum + proc.rss, 0);
+    out.set(row.id, use);
+  }
+  return out;
 }
 
 export function priflyReport(
@@ -214,7 +282,7 @@ export function priflyReport(
   const sessions: SessionRow[] = [];
   if (host !== undefined) add(kinds.host, host);
   // Wherever they hang: a relay started before the host last restarted is init's child now.
-  for (const relay of procs.filter(isRelay)) sessions.push(readRelay(acc, tree, relay, byId));
+  for (const relay of procs.filter(isRelay)) sessions.push(readRelay(acc, tree, relay, byId).row);
   for (const child of tree.children.get(hostPid) ?? []) {
     if (isRelay(child)) continue;
     // prifly's own short `claude` calls — a branch name, a summary — are claude too.

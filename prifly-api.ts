@@ -22,6 +22,9 @@
 
 export type DecorationTone = "good" | "warning" | "critical" | "info" | "muted";
 
+/** A launcher button's glow: its colour, and a line for its hover ("3 open errors"). */
+export type LauncherFlag = { tone: DecorationTone; hint?: string };
+
 /** One of the icons the window has: see `DECORATION_ICONS` in `@prifly/wire`. */
 export type DecorationIcon =
   | "server"
@@ -38,10 +41,15 @@ export type DecorationIcon =
   | "check"
   | "link"
   | "chart"
+  | "bug"
+  | "bug-off"
+  | "trello"
   | "dot";
 
-/** One item in a chip's own menu: "Move to Doing" on a Trello card. */
-/** One item in a chip's menu: "Move to Doing" on a Trello card, "Destroy box…" on a Vast.ai one. */
+/**
+ * One item in a chip's or a machine card's menu: "Move to Doing" on a Trello
+ * card, "Destroy box…" on a Vast.ai one.
+ */
 export type DecorationAction = {
   id: string;
   /** The menu's words: "Destroy box…". */
@@ -50,6 +58,11 @@ export type DecorationAction = {
   confirm?: string | undefined;
   /** Drawn in the danger colour. */
   destructive?: boolean | undefined;
+  /**
+   * Shown greyed out and not choosable: it does not apply now. Send it
+   * disabled rather than leaving it out, so the menu's items keep their place.
+   */
+  disabled?: boolean | undefined;
 };
 
 export type Decoration = {
@@ -84,13 +97,24 @@ export type Decoration = {
    */
   launcher?: string | undefined;
   /**
-   * One of the extension's own panels, by its manifest `id`. A status-bar
-   * item that names one is drawn as that panel's button — its icon in the
-   * item's tone, the details in its hover — instead of a chip of its own.
-   * A prifly older than this field shows the item as a chip, as before.
+   * The `id` of one of this extension's own panels (manifest `panels`) that
+   * the item is the state of. Only for the `unclaimed` items of `show`: the
+   * status bar then draws no chip, but that panel's button, its icon coloured
+   * by `tone`, its hover holding `label` and `details` (under the panel's
+   * description), and a click that opens the panel as before. `icon`, `url`,
+   * `terminal` and `actions` are not shown then. An id naming no panel of the
+   * extension is shown as an ordinary chip, with a warning in the log; on an
+   * item of a session's `bySession` the field changes nothing.
    */
   panel?: string | undefined;
 };
+
+/**
+ * What the extension says about one of its Snooze entries (manifest `snooze`)
+ * on one session: `enabled` false greys it out; `detail` is the muted text on
+ * its right — a short commit when choosable, the reason when not.
+ */
+export type SnoozeOption = { id: string; enabled: boolean; detail: string };
 
 /** A column of a board, in the order the board has them. */
 export type LaunchColumn = { id: string; name: string };
@@ -118,6 +142,15 @@ export type LaunchBadges = {
   dueLate?: boolean;
 };
 
+/** How often it happened over one period, as bars, oldest first. */
+export type LaunchSpark = {
+  /** Its name on the board's period switch: "1h", "24h", "7d". */
+  period: string;
+  counts: number[];
+  /** Everything in the period, for the words beside the bars. */
+  total?: number;
+};
+
 /** One thing a launcher can start a session from: a card, an issue, a ticket. */
 export type LaunchChoice = {
   /** The extension's own name for it; handed back when the reader picks it. */
@@ -127,6 +160,10 @@ export type LaunchChoice = {
   group?: string;
   /** A line under the title: who is on it, when it is due. */
   detail?: string;
+  /** Where it comes from, in code type, right under the title: a culprit. */
+  sub?: string;
+  /** How often it happened, one per period; the board switches between them. */
+  sparks?: LaunchSpark[];
   tone?: DecorationTone;
   /** Picking it asks this first; what is typed reaches `launch` as `input`. */
   input?: { title: string; placeholder?: string };
@@ -139,6 +176,8 @@ export type LaunchChoice = {
   /** Who is on it; the window draws initials. */
   people?: string[];
   badges?: LaunchBadges;
+  /** A session was already started from it; the board tints the card. */
+  started?: boolean;
 };
 
 /**
@@ -253,10 +292,217 @@ export type ExtensionCloud = {
   transcript(account: string, sessionId: string): Promise<unknown[]>;
 };
 
+/** One plan limit of an account, as prifly's usage poller last read it. */
+export type AccountLimitInfo = {
+  /** The statusline's name: "5h" (5-hour session), "7d" (weekly, all models), "7F" … (weekly, one model). */
+  label: string;
+  /** "5-hour session", "Weekly, all models", "Weekly, Fable only". */
+  title: string;
+  /** Of the limit spent, 0–100 (can exceed 100). */
+  usedPercent: number;
+  /** When the window reopens, epoch ms; null when unknown. */
+  resetsAt: number | null;
+  /** The window's length in ms. */
+  windowMs: number;
+};
+
+/**
+ * The "Reset for free" offer (claude.ai Settings → Usage): free weekly-limit
+ * resets on top of the plan. `left` sums every live grant's `resets_left`;
+ * `usableNow`/`endsAt` are the soonest-expiring one's.
+ */
+export type AccountFreeReset = {
+  left: number;
+  usableNow: boolean;
+  /** Epoch ms. */
+  endsAt: number;
+};
+
+/** A Claude account prifly holds, with its limits. */
+export type AccountInfo = {
+  /** The login's email — stable across local and cloud, what readings are keyed by. */
+  email: string;
+  /** What the reader calls it; the email when they named it nothing. */
+  label: string;
+  /** New local sessions start on this account (the "new sessions" star in the accounts UI). */
+  startsNewSessions: boolean;
+  /** When its limits were last read successfully, epoch ms; null before the first good read. */
+  readAt: number | null;
+  /** Its limits as of `readAt`; [] before the first good read. */
+  limits: AccountLimitInfo[];
+  /** Its free resets as of `readAt`; null with none, or not read yet. */
+  freeResets: AccountFreeReset | null;
+};
+
 /** A session the host knows, for an extension to match its things against. */
 export type ExtensionSession = { id: string; title: string; cwd: string; state: string };
 
+/**
+ * One machine an extension offers sessions to use — a rented Vast.ai box —
+ * keyed within the extension the way a `Decoration` is. `os`/`arch`/`access`/
+ * `notes`/`trust`/`capabilities`/`ownerSession` left out take `Machine`'s own
+ * defaults (see `@prifly/wire`): `os` "other", `trust` "ask-first".
+ */
+export type ExtensionMachine = {
+  key: string;
+  kind?: "machine" | "provider" | "service";
+  label: string;
+  os?: string;
+  arch?: string;
+  /** The argv that runs a command there: `["ssh","root@1.2.3.4","-p","2222"]`. */
+  exec?: string[];
+  access?: string;
+  trust?: "ask-first" | "use-freely";
+  notes?: string;
+  capabilities?: {
+    name: string;
+    state?: "present" | "absent" | "unknown";
+    version?: string;
+    detail?: string;
+    probe?: string;
+  }[];
+  /** The session (or its first 8 characters) that rented or owns it, for whom it is use-freely. */
+  ownerSession?: string;
+  /** A line under the machine's name: "jimmy · leased until 14:30 · 1h 40m left". */
+  status?: { text: string; tone?: DecorationTone };
+  /**
+   * The card's ▾ menu. Choosing one calls the extension's action handler
+   * (`api.onAction` / the module's `action` export) with this machine's `key`
+   * and the action's id, after asking `confirm` when it is not "".
+   */
+  actions?: DecorationAction[];
+};
+
+/** What `api.dialog` shows: see there. */
+export type DialogSpec = {
+  sessionId?: string;
+  title: string;
+  description?: string;
+  text: string;
+  rows?: number;
+  hint?: string;
+  resetTo?: string;
+  confirm: string;
+  checkbox?: DialogCheckbox;
+  /** Number fields in one row in place of the textarea (`text` is then unused). */
+  numbers?: DialogNumber[];
+};
+export type DialogCheckbox = { label: string; checked?: boolean };
+export type DialogNumber = {
+  key: string;
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+};
+/** A dialog with a checkbox, confirmed. */
+export type DialogAnswer = { text: string; checked: boolean };
+/** A dialog with number fields, confirmed: each value by its `key`, clamped to its min/max. */
+export type DialogNumbersAnswer = DialogAnswer & { numbers: Record<string, number> };
+
+/** An amount the reader confirms with the row (a rental's budget). */
+export type PickAmount = {
+  /** "Budget for this rental" */
+  label: string;
+  /** "$" */
+  prefix: string;
+  /** The session's suggestion; the reader may change it. */
+  value: number;
+  /** One line under the field: how the suggestion was made, what it means. */
+  hint: string;
+  /**
+   * Recompute one column from the amount as the reader types: each row's
+   * `column` cell becomes `amount / Number(row[rateColumn])` with `unit`,
+   * and its header "Hours in <prefix><amount>".
+   */
+  perRow?: { column: string; rateColumn: string; unit: string };
+  /**
+   * A soft limit on the amount. Only where `api.features` includes
+   * "pick-amount-limit": an older prifly refuses the unknown field.
+   */
+  limit?: {
+    /** The largest amount within the limit. */
+    max: number;
+    /** A line always shown under the hint (the credit breakdown). */
+    text: string;
+    /** The warning shown once the typed amount is above `max`. */
+    over: string;
+    /** The label of the checkbox the reader must tick to go past `max`. */
+    ack: string;
+  };
+};
+
+/** What an extension tool asks the reader: prifly's pick card, optionally with an amount. */
+export type ExtensionPick = {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  /** The button's word, default "Choose". */
+  action?: string;
+  amount?: PickAmount;
+};
+
+/** The reader's answer: the row and, when the pick had one, the amount they confirmed. Null: none of these. */
+export type ExtensionPickAnswer = { row: number; amount: number | null } | null;
+
+export type ExtensionToolContext = {
+  /** The full id of the session that called the tool. */
+  session: string;
+  /** Show a pick card in that session and wait for the reader. */
+  pick(request: ExtensionPick): Promise<ExtensionPickAnswer>;
+  /** Aborted when the session or the call goes away. */
+  signal: AbortSignal;
+};
+
+export type ExtensionTool = {
+  /** `^[a-z][a-z0-9_]{0,47}$`; the session sees it as `mcp__prifly__<name>`. */
+  name: string;
+  description: string;
+  /** A JSON Schema object for the arguments. */
+  inputSchema: Record<string, unknown>;
+  /** The text the tool returns. A throw is returned as an MCP tool error with its message. */
+  call(args: Record<string, unknown>, ctx: ExtensionToolContext): Promise<string>;
+};
+
+/** Added to `ExtensionApi`. Absent on an older prifly: call it as `api.tools?.register(...)`. */
+export type ExtensionToolsApi = {
+  /**
+   * Replace every tool this extension serves. A name another extension or
+   * prifly owns, or an `inputSchema` that is not `type: "object"`, is refused
+   * and logged. A session reads the tool list when it connects: one already
+   * running sees a change only after it reconnects.
+   */
+  register(tools: ExtensionTool[]): void;
+};
+
+/** Added to `ExtensionApi`. Absent on an older prifly: call it as `api.vault?.read(...)`. */
+export type ExtensionVaultApi = {
+  /**
+   * The token of the vault entry `name`, an `api-token` entry the reader keeps
+   * in prifly's vault (Settings → Vault). Null — so the extension falls back
+   * to its own way of finding a key — when there is no such entry, it is
+   * another kind, the manifest's `vault` list does not name it, or its level
+   * is not 1: level 2 and 4 ask the reader on a session's card, which an
+   * extension has none of, and level 3 is a fence. Read it each time it is
+   * needed rather than keeping it: an entry the reader changes or fences
+   * takes effect on the next read.
+   */
+  read(name: string): Promise<string | null>;
+};
+
 export type ExtensionApi = {
+  /**
+   * What this prifly accepts beyond the first version, by name: "pick-amount-limit"
+   * (`limit` on a `ctx.pick` amount). Absent on a prifly that predates the list.
+   */
+  features?: readonly string[];
+  /** The vault's API tokens this extension's manifest names under `vault`; see there. */
+  vault?: ExtensionVaultApi;
+  /**
+   * MCP tools this extension serves to every session, as
+   * `mcp__prifly__<name>` (`mcp/extension-tools.ts`). Only while it is running.
+   */
+  tools?: ExtensionToolsApi;
   /**
    * Replace everything this extension shows. `bySession` is keyed by a
    * session id or any unique start of one (a label has room for 8 characters);
@@ -264,7 +510,38 @@ export type ExtensionApi = {
    */
   show(bySession: Record<string, Decoration[]>, unclaimed: Decoration[]): void;
   /**
-   * Carry out an action the reader chose from an item's right-click menu.
+   * Replace the extension's entries in each session's Snooze submenu, the
+   * whole map each time. Keyed like `show`'s `bySession`; an entry the manifest
+   * declares but a session's list leaves out is not offered on that session.
+   */
+  snoozeOptions(bySession: Record<string, SnoozeOption[]>): void;
+  /**
+   * Make the launcher `launchId`'s button glow in `tone`'s colour, `hint`
+   * added to its hover — something waiting behind it, such as open errors.
+   * Null puts it out.
+   */
+  flag(launchId: string, flag: LauncherFlag | null): void;
+  /**
+   * Tell the reader something that cannot wait for them to look at a chip:
+   * "lc-box3 is destroyed in 15 min unless its lease is extended". Shown as a
+   * notice in the window until dismissed — and by the OS, where the window
+   * may raise its notifications and does not have the focus — under the
+   * extension's name, in `tone`'s colour ("info" when left out). `session`, a
+   * session id or any unique start of one, makes a click on it open that
+   * session. Also a line in the host's log, under `ext.<id>.notify`.
+   */
+  notify(text: string, options?: { tone?: DecorationTone; session?: string }): void;
+  /**
+   * Replace every machine this extension offers sessions to use, the whole
+   * list each time — its rented boxes, and a `provider`-kind machine for
+   * itself when it can rent more. Ids are namespaced `ext:<extension id>:<key>`
+   * before a session sees them, so an extension needs only its own `key` to
+   * be unique.
+   */
+  machines: { report(items: ExtensionMachine[]): void };
+  /**
+   * Carry out an action the reader chose from an item's right-click menu, or
+   * from the ▾ on one of this extension's machine cards (its machine `key`).
    * What it returns is shown to them ("Destroyed lc-box1"); what it throws is
    * shown as the failure. One handler per extension; a second call replaces it.
    */
@@ -284,6 +561,28 @@ export type ExtensionApi = {
   paths: readonly string[];
   /** The cloud sessions of the accounts connected to prifly, read with their own tokens. */
   cloud: ExtensionCloud;
+  /**
+   * Every Claude account prifly holds limits for — local logins and cloud-only
+   * logins, one entry per email — as the host's pollers last read them. No
+   * call leaves the machine: it answers from what the pollers already hold,
+   * so asking often costs nothing and shows a new reading at most every poll.
+   */
+  accounts(): AccountInfo[];
+  /** Sends `text` into the session as a <prifly-notice> (shown as prifly's, not the user's); resumes it first if it ended. Clears any snooze on it. */
+  prompt(sessionId: string, text: string): Promise<{ delivered: boolean }>;
+  /** Snoozes the session until `until` (epoch ms), or until the extension wakes it when `until` is null. `label` replaces "Back at …" in the Snoozed list, e.g. "Until 77257ba3 is live". `null` as the whole argument clears the snooze. */
+  snooze(sessionId: string, snooze: { until: number | null; label?: string } | null): void;
+  /**
+   * Opens a modal dialog in the window over that session; resolves with the
+   * edited text on confirm, null on cancel/close. With `checkbox`, a labelled
+   * box (unchecked unless `checked`) sits between the hint and the buttons,
+   * and it resolves with `{ text, checked }` instead. With `numbers`, labelled
+   * number inputs replace the textarea and it resolves with
+   * `{ text, checked, numbers }`, `numbers` keyed by each field's `key`.
+   */
+  dialog(spec: DialogSpec & { numbers: DialogNumber[] }): Promise<DialogNumbersAnswer | null>;
+  dialog(spec: DialogSpec & { checkbox: DialogCheckbox }): Promise<DialogAnswer | null>;
+  dialog(spec: DialogSpec): Promise<string | null>;
 };
 
 export type ExtensionModule = {
@@ -301,13 +600,24 @@ export type ExtensionModule = {
   open?: (launchId: string, key: string) => LaunchItem | Promise<LaunchItem>;
   /** An item dragged into another column, by that column's `id`. */
   move?: (launchId: string, key: string, column: string) => void | Promise<void>;
-  /** The chosen one, as a session would start from it, with what was typed into its row. */
-  launch?: (launchId: string, key: string, input: string) => Launch | Promise<Launch>;
+  /**
+   * The chosen one, as a session would start from it, with what was typed into
+   * its row. `again` is true when the reader asked for it from a session that
+   * was already started from this item — another one, on purpose.
+   */
+  launch?: (
+    launchId: string,
+    key: string,
+    input: string,
+    how: { again: boolean },
+  ) => Launch | Promise<Launch>;
   /**
    * The session that launch became, once it is running — where a card learns
    * which session is its. Only for a launch the reader went through with.
    */
   launched?: (launchId: string, key: string, sessionId: string) => void | Promise<void>;
+  /** The reader chose the Snooze entry `entryId` on that session; only called while its option is enabled. */
+  snooze?: (entryId: string, sessionId: string) => void | Promise<void>;
   /** An item from a chip's menu, by the decoration's `key`; what it returns is said to the reader. */
   action?: (key: string, actionId: string) => string | undefined | Promise<string | undefined>;
   /**
