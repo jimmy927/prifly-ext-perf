@@ -78,7 +78,8 @@ function windowsRows(c, info, v) {
     metric(
       v.cpu,
       "CPU",
-      `${pct(c.busy ?? 0)} busy · ${c.queue ?? 0} waiting`,
+      // The hypervisor's count where there is one: it alone sees the whole machine.
+      `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${c.queue ?? 0} waiting`,
       share,
       spark(history("windows", "cpu"), 100),
     ),

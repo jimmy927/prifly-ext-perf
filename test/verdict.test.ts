@@ -76,6 +76,7 @@ describe("Windows", () => {
     diskQueue: 0,
     diskRead: 0,
     diskWrite: 0,
+    machine: 32,
     wslVm: 100,
   } satisfies WindowsCounters;
 
