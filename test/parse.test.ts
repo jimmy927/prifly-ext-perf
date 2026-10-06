@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseProcStat } from "../procs";
-import { COUNTERS, parseRow, sumByName } from "../windows";
+import { COUNTERS, machineBusy, parseRow, sumByName } from "../windows";
 import { parseMeminfo, parsePressure, parseStat } from "../wsl";
 
 describe("Linux files", () => {
@@ -41,6 +41,14 @@ describe("Windows counters", () => {
     expect(row?.busy).toBe(1.5);
     expect(row?.wslVm).toBe(paths.length + 0.5);
     expect(row?.at).toBe(7);
+  });
+
+  test("the machine's share is the hypervisor's, else Windows' own", () => {
+    const values = paths.map((_, i) => `"${i + 1}.5"`);
+    const row = parseRow(header, `"10/01/2026 11:01:33.105",${values.join(",")}`, 0);
+    if (row === null) throw new Error("no row");
+    expect(machineBusy(row)).toBe(paths.indexOf(COUNTERS.machine) + 1.5);
+    expect(machineBusy({ ...row, machine: null })).toBe(1.5);
   });
 
   test("-1 and blanks are null, not zero", () => {

@@ -32,6 +32,10 @@ export const COUNTERS = {
   diskQueue: "\\PhysicalDisk(_Total)\\Avg. Disk Queue Length",
   diskRead: "\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",
   diskWrite: "\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",
+  // The hypervisor's own view: every hardware thread's run time, whoever ran
+  // on it — Windows, the WSL VM, the hypervisor. Windows itself runs on
+  // virtual processors once Hyper-V is up, so only this sees the whole machine.
+  machine: "\\Hyper-V Hypervisor Logical Processor(_Total)\\% Total Run Time",
   // Summed over cores: 100 is one core.
   wslVm: "\\Process(vmmemwsl)\\% Processor Time",
 } as const;
@@ -39,6 +43,9 @@ export type Field = keyof typeof COUNTERS;
 
 /** One line of counters; a counter Windows could not read is null. */
 export type WindowsCounters = { at: number } & Record<Field, number | null>;
+
+/** Share of the machine busy, 0–100: the hypervisor's count, else Windows' own where it has none. */
+export const machineBusy = (c: WindowsCounters): number => c.machine ?? c.busy ?? 0;
 
 export type WindowsInfo = { name: string; cores: number; memTotal: number };
 

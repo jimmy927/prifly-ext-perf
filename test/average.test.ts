@@ -166,6 +166,7 @@ test("Windows counters average over the lines that had them", () => {
     diskQueue: null,
     diskRead: null,
     diskWrite: null,
+    machine: null,
     wslVm: null,
   });
   const ring = [line(0, 10), line(1, 20), line(2, null), line(3, 60)];

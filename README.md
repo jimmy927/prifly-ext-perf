@@ -48,7 +48,7 @@ and a sparkline of the averages:
 
 | | WSL | Windows |
 |---|---|---|
-| **CPU** | tasks ready to run against cores, and how long they waited for one | % busy, the processor queue, and the WSL VM's share of the machine |
+| **CPU** | tasks ready to run against cores, and how long they waited for one | % of the machine busy, the processor queue, and the WSL VM's share of the machine |
 | **Memory** | available of total, time stalled waiting for memory, swap | available, committed, and the total |
 | **Disk** | read and write rates, time stalled waiting for disk | % busy, time per request, rates, queue |
 | last row | load average, uncoloured | writes to the page file, uncoloured |

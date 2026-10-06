@@ -32,6 +32,7 @@ import { type Proc, type ProcSnapshot, readProcs } from "./procs";
 import { endAt, HOUR, keep, windowEnds } from "./ring";
 import { headline, linuxVerdicts, type Tone, type Verdicts, windowsVerdicts } from "./verdict";
 import {
+  machineBusy,
   topProcesses,
   type WindowsCounters,
   type WindowsInfo,
@@ -127,7 +128,7 @@ function point(info: WindowsInfo | null, s: LinuxSample, c: WindowsCounters | nu
       c === null
         ? null
         : {
-            cpu: c.busy ?? 0,
+            cpu: machineBusy(c),
             memory: memTotal > 0 ? 100 * (1 - ((c.availableMB ?? 0) * 2 ** 20) / memTotal) : 0,
             disk: (c.diskRead ?? 0) + (c.diskWrite ?? 0),
           },
