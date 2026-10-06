@@ -131,7 +131,7 @@ turns run, not its `claude` or MCP servers.
 |---|---|---|
 | Chip | WSL CPU or memory is orange or red | The 3 sessions using most, each at least 1 core (CPU) or 10 % of the RAM (memory), get a chip on their row: *Using 6.4 of 16 cores: bun test*, with why, the busiest program and its pid, and when the session was last told. It stays until WSL has been green for 60 s. |
 | Notice to a session | CPU or memory red for 30 s without a break | The one session using most (cores for CPU, RAM for memory, at least the chip minimum) is asked to let its work finish and start nothing heavy, or to stop a benchmark, build or training run and offer the reader a rented machine. At most once per 10 min per session. |
-| Note to you | CPU or memory red for 3 min, or red for 30 s with more cores used outside every session than by the busiest one | A notice in prifly, linked to the busiest session. At most once per 10 min. |
+| Note to you | CPU or memory red for 3 min | A notice in prifly, linked to the busiest session; when more cores are used outside every session than by the busiest one, it says WSL is busy outside prifly instead. At most once per 10 min. |
 
 A notice goes **only to a session that is working**. prifly's `prompt` resumes
 a session that has ended and clears its snooze, so an idle, waiting or ended

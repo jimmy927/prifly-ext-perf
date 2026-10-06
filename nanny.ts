@@ -17,8 +17,8 @@
  *   when that session is working (`prompt` resumes an ended session and
  *   clears its snooze, so an idle one is never messaged), and at most once
  *   every 10 min per session.
- * - The reader is told at most once every 10 min: after 3 min red, or at
- *   once when most of the load is no session's.
+ * - The reader is told at most once every 10 min, after 3 min red; when most
+ *   of the load is no session's, the note says so instead of naming one.
  */
 
 import type { Decoration } from "./prifly-api";
@@ -249,12 +249,12 @@ function noticeFor(input: NannyInput, memory: NannyMemory, now: number): Notice 
 function notifyFor(input: NannyInput, memory: NannyMemory, now: number): Decision["notify"] {
   if (memory.notifiedAt !== null && now - memory.notifiedAt < COOLDOWN) return null;
   const cpuSince = memory.critical.cpu;
-  if (cpuSince !== null && now - cpuSince >= NOTICE_AFTER && mostlyUnowned(input)) {
+  if (cpuSince !== null && now - cpuSince >= NOTIFY_AFTER && mostlyUnowned(input)) {
     return {
       text:
-        `WSL has been out of CPU for ${spanText(now - cpuSince)} (${psiText("cpu", input)}). ` +
-        `Most of it is no session's: ${input.unowned.toFixed(1)} of ${input.cores} cores go to ` +
-        "processes outside every prifly session (Docker, Windows-side tools or something started by hand).",
+        `WSL has been busy for ${spanText(now - cpuSince)}. ${input.unowned.toFixed(1)} of ${input.cores} ` +
+        "cores are used outside prifly, by Docker, Windows-side tools or something started by hand. " +
+        "Sessions may feel slower.",
     };
   }
   const [resource] = redFor(memory, now, NOTIFY_AFTER);

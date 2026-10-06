@@ -227,13 +227,18 @@ describe("telling the reader", () => {
     ).toHaveLength(1);
   });
 
-  test("load nobody owns tells the reader at once, and no session", () => {
+  test("load nobody owns tells the reader after 3 min, and no session", () => {
     const given = input({ cpu: "critical" }, [session("aaaaaaaa", { cores: 2 })], { unowned: 9.1 });
-    const { notices, notifies } = run(newNannyMemory(), given, 0, 30);
-    expect(notices).toEqual([]);
+    const early = run(newNannyMemory(), given, 0, 179);
+    expect(early.notices).toEqual([]);
+    expect(early.notifies).toEqual([]);
+    const { notifies } = run(early.last.memory, given, 180, 180);
     expect(notifies).toHaveLength(1);
     expect(notifies[0]?.session).toBeUndefined();
-    expect(notifies[0]?.text).toContain("9.1 of 16 cores");
+    expect(notifies[0]?.text).toBe(
+      "WSL has been busy for 3 min. 9.1 of 16 cores are used outside prifly, by Docker, " +
+        "Windows-side tools or something started by hand. Sessions may feel slower.",
+    );
   });
 
   test("unowned load below the top session's does not count", () => {
