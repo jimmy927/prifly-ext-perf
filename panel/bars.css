@@ -4,19 +4,30 @@
   --s-0: #2a78d6;
   --s-1: #1baf7a;
   --s-2: #eb6834;
-  --s-3: #c9497f;
+  --s-3: #9a6a3f;
   --s-4: #0e8fb0;
   --s-5: #b08a12;
   --s-6: #6f8f2a;
+  /* The host's helpers, in the host's own purple, lighter. */
+  --k-dictation: #7a6ad0;
+  --k-intent: #a597e3;
 }
 :root.dark {
   --s-0: #3987e5;
   --s-1: #199e70;
   --s-2: #d95926;
-  --s-3: #df6699;
+  --s-3: #b98557;
   --s-4: #23a6c7;
   --s-5: #c99a2e;
   --s-6: #86a83a;
+  --k-dictation: #8e7fe3;
+  --k-intent: #b6abf0;
+}
+.k-dictation {
+  background: var(--k-dictation);
+}
+.k-intent {
+  background: var(--k-intent);
 }
 .s-0 {
   background: var(--s-0);

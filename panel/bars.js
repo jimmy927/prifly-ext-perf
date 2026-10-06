@@ -104,10 +104,18 @@ const sumOf = (rows) =>
     { processes: 0, rss: 0, cpu: 0 },
   );
 
+// What no session owns (`report.own`), by what it is for; each colour is `--k-<key>`.
+const OWN = [
+  ["host", "Host", "prifly itself and its short claude calls"],
+  ["dictation", "Dictation models", "Parakeet twice and Silero, loaded while dictation is on"],
+  ["intent", "Intent model", "reads each message as a question or an instruction"],
+  ["gates", "Git buttons", "commits, lands and their hooks"],
+];
+
 /**
  * prifly's usage by session: the sessions that weigh most (CPU and memory,
  * each as a share of prifly's) a colour each, the rest as one part, and what
- * no session owns — the host, its helpers, a git button's run — as the last.
+ * no session owns after them, by what it is for.
  */
 function sessionParts(report) {
   const total = report.total;
@@ -126,14 +134,10 @@ function sessionParts(report) {
     const how = `${rest.length} more`;
     parts.push({ key: "relay", name: "Other sessions", how, use, count: use.processes });
   }
-  const sessions = sumOf(report.sessions);
-  const own = {
-    processes: Math.max(0, total.processes - sessions.processes),
-    rss: Math.max(0, total.rss - sessions.rss),
-    cpu: Math.max(0, total.cpu - sessions.cpu),
-  };
-  const how = "the host, its helpers, git buttons";
-  parts.push({ key: "host", name: "No session's", how, use: own, count: own.processes });
+  for (const [key, name, how] of OWN) {
+    const use = report.own[key];
+    parts.push({ key, name, how, use, count: use.processes });
+  }
   return parts;
 }
 

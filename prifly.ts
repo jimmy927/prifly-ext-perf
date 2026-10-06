@@ -53,7 +53,16 @@ export type PriflyReport = {
   otherContainers: Usage;
   /** How many containers each side has; their processes are not counted, as Docker hides them. */
   containerCount: { sessions: number; other: number };
+  /** What no session owns, by what it is for: the parts of `total` the sessions leave. */
+  own: Record<Own, Usage>;
 };
+
+/**
+ * What no session owns: the host with its own short `claude` calls, the
+ * speech models dictation keeps loaded, the model that reads each message's
+ * intent, and the git buttons' runs (a writer's land is its session's).
+ */
+export type Own = "host" | "dictation" | "intent" | "gates";
 
 const empty = (): Usage => ({ processes: 0, rss: 0, cpu: 0, read: 0, write: 0 });
 const noKinds = (): Record<Kind, Usage> => ({
@@ -302,13 +311,53 @@ export function toolUseOf(
   return out;
 }
 
-/** A runner and the gate under it, counted as gates and, for a writer's land, as its session's. */
-function countGate(gates: Usage, tree: Tree, runner: Proc, sessions: SessionRow[]): void {
+/** A runner and the gate under it, counted as gates and as its session's — or, for a git button's, as no one's. */
+function countGate(
+  gates: Usage,
+  own: Usage,
+  tree: Tree,
+  runner: Proc,
+  sessions: SessionRow[],
+): void {
   const prefix = gateSessionPrefix(runner);
   const row = prefix === null ? undefined : sessions.find((s) => s.id.startsWith(prefix));
   for (const proc of subtree(tree, runner)) {
     add(gates, proc);
-    if (row !== undefined) add(row, proc);
+    add(row ?? own, proc);
+  }
+}
+
+/** Which of the host's own helpers a child of it is, by the script it runs. */
+function helperOf(child: Proc): Own {
+  if (child.argv.some((arg) => /\/dictation\/[\w-]+-worker\.ts$/.test(arg))) return "dictation";
+  if (child.argv.some((arg) => arg.endsWith("intent-model/worker.ts"))) return "intent";
+  return "host";
+}
+
+/**
+ * The host and what it started that is no session's and no gate: its helpers
+ * as host, and its own short `claude` calls — a branch name, a summary — as
+ * claude, all of them as `own` by what they are for.
+ */
+function readHost(
+  kinds: Record<Kind, Usage>,
+  own: Record<Own, Usage>,
+  tree: Tree,
+  hostPid: number,
+): void {
+  const host = tree.byPid.get(hostPid);
+  if (host !== undefined) {
+    add(kinds.host, host);
+    add(own.host, host);
+  }
+  for (const child of tree.children.get(hostPid) ?? []) {
+    if (isRelay(child) || isGateRunner(child)) continue;
+    const kind = isClaude(child) ? kinds.claude : kinds.host;
+    const helper = own[helperOf(child)];
+    for (const proc of subtree(tree, child)) {
+      add(kind, proc);
+      add(helper, proc);
+    }
   }
 }
 
@@ -328,18 +377,19 @@ export function priflyReport(
   const kinds = noKinds();
   const acc: Acc = { kinds, mcp: new Map(), config };
   const byId = new Map(known.map((session) => [session.id, session]));
-  const host = tree.byPid.get(hostPid);
+  const own: Record<Own, Usage> = {
+    host: empty(),
+    dictation: empty(),
+    intent: empty(),
+    gates: empty(),
+  };
   const sessions: SessionRow[] = [];
-  if (host !== undefined) add(kinds.host, host);
   // Wherever they hang: a relay started before the host last restarted is init's child now.
   for (const relay of procs.filter(isRelay)) sessions.push(readRelay(acc, tree, relay, byId).row);
-  for (const runner of procs.filter(isGateRunner)) countGate(kinds.gates, tree, runner, sessions);
-  for (const child of tree.children.get(hostPid) ?? []) {
-    if (isRelay(child) || isGateRunner(child)) continue;
-    // prifly's own short `claude` calls — a branch name, a summary — are claude too.
-    const kind = isClaude(child) ? kinds.claude : kinds.host;
-    for (const proc of subtree(tree, child)) add(kind, proc);
+  for (const runner of procs.filter(isGateRunner)) {
+    countGate(kinds.gates, own.gates, tree, runner, sessions);
   }
+  readHost(kinds, own, tree, hostPid);
   httpServers(acc, sessions);
   const rows = new Map(sessions.map((row) => [row.id, row]));
   const otherContainers = empty();
@@ -368,5 +418,5 @@ export function priflyReport(
   );
   const mcp = [...acc.mcp.values()].sort((a, b) => b.processes - a.processes);
   const byCpu = sessions.sort((a, b) => b.cpu - a.cpu);
-  return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount };
+  return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount, own };
 }

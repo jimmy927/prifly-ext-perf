@@ -126,6 +126,23 @@ describe("prifly's processes", () => {
     expect(withGates.total.processes).toBe(13);
     // The writer's land is its session's; a git button's run is no session's.
     expect(withGates.sessions[0]).toMatchObject({ processes: 8, cpu: 7 });
+    expect(withGates.own.gates).toMatchObject({ processes: 2, cpu: 2 });
+  });
+
+  test("what no session owns is split by what it is for, and adds up to what the sessions leave", () => {
+    const final = proc(host.pid, ["bun", "/p/dictation/final-worker.ts", "{}"], 1);
+    const grey = proc(host.pid, ["bun", "/p/dictation/grey-worker.ts", "{}"], 1);
+    const vad = proc(host.pid, ["bun", "/p/dictation/vad-worker.ts", "{}"]);
+    const withModels = priflyReport([...all, final, grey, vad], host.pid, known, config);
+    const own = withModels.own;
+    expect(own.dictation).toMatchObject({ processes: 3, cpu: 2 });
+    expect(own.intent.processes).toBe(1);
+    // The host itself and its haiku branch-namer.
+    expect(own.host.processes).toBe(2);
+    expect(own.gates.processes).toBe(0);
+    const sessions = withModels.sessions.reduce((sum, row) => sum + row.processes, 0);
+    const owned = Object.values(own).reduce((sum, use) => sum + use.processes, 0);
+    expect(sessions + owned).toBe(withModels.total.processes);
   });
 
   test("a session with no tools is absent", () => {
