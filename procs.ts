@@ -1,7 +1,7 @@
 /**
  * Every process this Linux can see, from `/proc`, with its counters. Only this distro's processes are visible: Docker
  * Desktop's containers live in a distro of their own, so they count in the
- * kernel's totals (`wsl.ts`) but never appear here.
+ * kernel's totals (`wsl.ts`) but never appear here; their cgroups do (`docker.ts`).
  */
 
 import { readdirSync, readFileSync } from "node:fs";

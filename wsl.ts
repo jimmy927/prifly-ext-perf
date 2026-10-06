@@ -28,6 +28,8 @@ export type LinuxSample = {
   cores: number;
   /** Share of all cores busy over the window, 0–100. */
   busy: number;
+  /** Cores the kernel spent on interrupts (`irq`, `softirq`), which no process is charged for. */
+  kernel: number;
   /** Tasks ready to run, the running included (`procs_running`): the mean over the window. */
   runnable: number;
   load: [number, number, number];
@@ -81,8 +83,16 @@ export function parseMeminfo(text: string): Map<string, number> {
   return out;
 }
 
-/** The counters a sample needs from `/proc/stat`: total and idle jiffies, and `procs_running`. */
-export function parseStat(text: string): { total: number; idle: number; runnable: number } {
+/**
+ * The counters a sample needs from `/proc/stat`: total and idle jiffies, the
+ * jiffies spent on interrupts, and `procs_running`.
+ */
+export function parseStat(text: string): {
+  total: number;
+  idle: number;
+  kernel: number;
+  runnable: number;
+} {
   const lines = text.split("\n");
   const cpu = (lines.find((line) => line.startsWith("cpu ")) ?? "")
     .split(/\s+/)
@@ -91,8 +101,10 @@ export function parseStat(text: string): { total: number; idle: number; runnable
   const total = cpu.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
   // idle + iowait: a core waiting on disk is not doing work either.
   const idle = (cpu[3] ?? 0) + (cpu[4] ?? 0);
+  // irq + softirq: time no process is charged for, so no process table can show it.
+  const kernel = (cpu[5] ?? 0) + (cpu[6] ?? 0);
   const running = lines.find((line) => line.startsWith("procs_running "));
-  return { total, idle, runnable: Number(running?.split(" ")[1] ?? 0) };
+  return { total, idle, kernel, runnable: Number(running?.split(" ")[1] ?? 0) };
 }
 
 function vmstat(): { pgpgin: number; pgpgout: number } {
@@ -107,11 +119,12 @@ function vmstat(): { pgpgin: number; pgpgout: number } {
  */
 export type LinuxRaw = Omit<
   LinuxSample,
-  "busy" | "diskRead" | "diskWrite" | "cpu" | "memory" | "io"
+  "busy" | "kernel" | "diskRead" | "diskWrite" | "cpu" | "memory" | "io"
 > & {
-  /** Jiffies on all cores, and the idle share of them. */
+  /** Jiffies on all cores, the idle share of them, and the share spent on interrupts. */
   total: number;
   idle: number;
+  kernel: number;
   /** Pages in and out, in kB. */
   pgpgin: number;
   pgpgout: number;
@@ -131,6 +144,7 @@ export function readLinux(): LinuxRaw {
     cores: availableParallelism(),
     total: stat.total,
     idle: stat.idle,
+    kernel: stat.kernel,
     ...vmstat(),
     runnable: stat.runnable,
     load: [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0],

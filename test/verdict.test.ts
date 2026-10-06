@@ -11,6 +11,7 @@ function linux(over: Partial<LinuxSample>): LinuxSample {
     at: 0,
     cores: 16,
     busy: 10,
+    kernel: 0,
     runnable: 2,
     load: [1, 1, 1],
     memTotal: 24 * GB,

@@ -12,6 +12,7 @@
  * long that is.
  */
 
+import type { Container, ContainerInfo, ContainerSnapshot } from "./docker";
 import { type Proc, type ProcSnapshot, TICKS_PER_SECOND, type Totals } from "./procs";
 import { spanOf } from "./ring";
 import { COUNTERS, type Field, type WindowsCounters } from "./windows";
@@ -72,6 +73,7 @@ export function averageLinux(
     at: end.at,
     cores: end.cores,
     busy: ticks > 0 ? (100 * (ticks - (end.idle - start.idle))) / ticks : 0,
+    kernel: ticks > 0 ? ((end.kernel - start.kernel) / ticks) * end.cores : 0,
     runnable: level((raw) => raw.runnable),
     load: [level((raw) => raw.load[0]), level((raw) => raw.load[1]), level((raw) => raw.load[2])],
     memTotal: end.memTotal,
@@ -121,6 +123,37 @@ export function averageProcs(
     });
   }
   return { value, covered: span.seconds };
+}
+
+/**
+ * Every container running at the window's end, its CPU averaged over the
+ * window the way `averageProcs` does a process's; memory as of the end. What each is and whose comes from `infos` and `owner`; one Docker
+ * has not named yet goes by its id.
+ */
+export function averageContainers(
+  ring: readonly ContainerSnapshot[],
+  seconds: number,
+  infos: ReadonlyMap<string, ContainerInfo>,
+  owner: (info: ContainerInfo) => string,
+): Container[] {
+  const span = spanOf(ring, seconds);
+  if (span === null) return [];
+  const first = new Map<string, number>();
+  for (const snapshot of span.all) {
+    for (const [id, reading] of snapshot.containers)
+      if (!first.has(id)) first.set(id, reading.usage);
+  }
+  return [...span.end.containers.values()].map((reading) => {
+    const info = infos.get(reading.id) ?? { name: reading.id.slice(0, 12), paths: [] };
+    return {
+      id: reading.id,
+      name: info.name,
+      // Microseconds of CPU per second, over a million, is cores.
+      cpu: rateOf(first.get(reading.id) ?? reading.usage, reading.usage, span.seconds) / 1e6,
+      memory: reading.memory,
+      session: owner(info),
+    };
+  });
 }
 
 /** Windows' counters, each the mean of the lines that had it; null where none did. */

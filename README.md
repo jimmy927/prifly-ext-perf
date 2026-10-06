@@ -101,10 +101,22 @@ nothing wrong (4,195 measured on the machine this was written on).
   this hour), MCP server copies, memory, and CPU and disk.
 - **By kind**: stacked bars for memory, CPU and processes, split into each
   session's `claude`, MCP servers, the tools turns run (shells, tests,
-  builds), the host with its helpers, and the relays that keep sessions alive
-  through a host restart. The memory and CPU bars span the whole of WSL, so
-  other programs (striped) and what is free (the empty track) show beside
-  prifly's share.
+  builds), the Docker containers sessions started, the host with its helpers,
+  and the relays that keep sessions alive through a host restart. The memory
+  and CPU bars span the whole of WSL, so what lies outside prifly (striped)
+  and what is free (the empty track) show beside prifly's share: containers no
+  session started, the kernel's interrupts (CPU only), and other programs,
+  which is what is left.
+- **Containers**: Docker Desktop runs containers in a distro of its own, so
+  no process table here shows them. Their CPU and memory come from their
+  cgroups instead, which the WSL VM shares with every distro
+  (`/sys/fs/cgroup/docker/<id>`), and their names and mounts from Docker's
+  API. A container belongs to the session whose scratchpad it mounts, or else
+  to the one session whose folder holds its mounts or compose project. One in a
+  folder several sessions share, or in none, is "other containers". A
+  session's containers count in its row, and show as chips under *Doing now*.
+  Docker hides a container's processes, so containers count as one each, not
+  in the process bar.
 - **MCP servers**: each server, how many copies run, and what they cost. A
   stdio server (configured as a `command`) runs once per session, so 25
   sessions means 25 copies. An HTTP server (a `url`) runs once for all of them

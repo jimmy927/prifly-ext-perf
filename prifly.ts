@@ -11,12 +11,13 @@
  */
 
 import { basename } from "node:path";
+import type { Container } from "./docker";
 import type { McpConfig, McpServer } from "./mcp";
 import { serverOf } from "./mcp";
 import type { ExtensionSession } from "./prifly-api";
 import type { Proc } from "./procs";
 
-export type Kind = "host" | "relay" | "claude" | "mcp" | "tools";
+export type Kind = "host" | "relay" | "claude" | "mcp" | "tools" | "containers";
 
 export type Usage = { processes: number; rss: number; cpu: number; read: number; write: number };
 
@@ -29,6 +30,8 @@ export type SessionRow = Usage & {
   mcp: string[];
   /** The busiest program its turn runs now, or "". */
   doing: string;
+  /** The Docker containers it started, by name (`docker.ts`). */
+  containers: string[];
 };
 
 export type McpRow = Usage & {
@@ -44,9 +47,27 @@ export type PriflyReport = {
   kinds: Record<Kind, Usage>;
   sessions: SessionRow[];
   mcp: McpRow[];
+  /** Containers no running session started: outside prifly, like other programs. */
+  otherContainers: Usage;
+  /** How many containers each side has; their processes are not counted, as Docker hides them. */
+  containerCount: { sessions: number; other: number };
 };
 
 const empty = (): Usage => ({ processes: 0, rss: 0, cpu: 0, read: 0, write: 0 });
+const noKinds = (): Record<Kind, Usage> => ({
+  host: empty(),
+  relay: empty(),
+  claude: empty(),
+  mcp: empty(),
+  tools: empty(),
+  containers: empty(),
+});
+
+/** A container as a `Usage`: its memory and CPU; its processes and disk are not read. */
+function addContainer(into: Usage, container: Container): void {
+  into.rss += container.memory;
+  into.cpu += container.cpu;
+}
 
 function add(into: Usage, proc: Proc): void {
   into.processes += 1;
@@ -168,6 +189,7 @@ function readRelay(
     cwd: session?.cwd ?? "",
     mcp: [],
     doing: "",
+    containers: [],
   };
   add(acc.kinds.relay, relay);
   add(row, relay);
@@ -249,11 +271,7 @@ export function toolUseOf(
   config: McpConfig,
 ): Map<string, ToolUse> {
   const tree = treeOf(procs);
-  const acc: Acc = {
-    kinds: { host: empty(), relay: empty(), claude: empty(), mcp: empty(), tools: empty() },
-    mcp: new Map(),
-    config,
-  };
+  const acc: Acc = { kinds: noKinds(), mcp: new Map(), config };
   const byId = new Map(known.map((session) => [session.id, session]));
   const out = new Map<string, ToolUse>();
   for (const relay of procs.filter(isRelay)) {
@@ -268,14 +286,20 @@ export function toolUseOf(
   return out;
 }
 
+/**
+ * prifly's processes by kind and session, and Docker's containers beside
+ * them: one a running session started counts as that session's, the rest are
+ * `otherContainers`.
+ */
 export function priflyReport(
   procs: Proc[],
   hostPid: number,
   known: ExtensionSession[],
   config: McpConfig,
+  containers: Container[] = [],
 ): PriflyReport {
   const tree = treeOf(procs);
-  const kinds = { host: empty(), relay: empty(), claude: empty(), mcp: empty(), tools: empty() };
+  const kinds = noKinds();
   const acc: Acc = { kinds, mcp: new Map(), config };
   const byId = new Map(known.map((session) => [session.id, session]));
   const host = tree.byPid.get(hostPid);
@@ -290,6 +314,21 @@ export function priflyReport(
     for (const proc of subtree(tree, child)) add(kind, proc);
   }
   httpServers(acc, sessions);
+  const rows = new Map(sessions.map((row) => [row.id, row]));
+  const otherContainers = empty();
+  const containerCount = { sessions: 0, other: 0 };
+  for (const container of containers) {
+    const row = rows.get(container.session);
+    if (row === undefined) {
+      addContainer(otherContainers, container);
+      containerCount.other += 1;
+      continue;
+    }
+    containerCount.sessions += 1;
+    addContainer(kinds.containers, container);
+    addContainer(row, container);
+    row.containers.push(container.name);
+  }
   const total = Object.values(kinds).reduce(
     (sum, usage) => ({
       processes: sum.processes + usage.processes,
@@ -301,5 +340,6 @@ export function priflyReport(
     empty(),
   );
   const mcp = [...acc.mcp.values()].sort((a, b) => b.processes - a.processes);
-  return { total, kinds, sessions: sessions.sort((a, b) => b.cpu - a.cpu), mcp };
+  const byCpu = sessions.sort((a, b) => b.cpu - a.cpu);
+  return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount };
 }

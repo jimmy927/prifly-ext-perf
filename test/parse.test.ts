@@ -14,9 +14,9 @@ describe("Linux files", () => {
     });
   });
 
-  test("/proc/stat gives jiffies, idle with iowait, and the run queue", () => {
-    const text = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 1 2 3\nprocs_running 27\nprocs_blocked 0\n";
-    expect(parseStat(text)).toEqual({ total: 1000, idle: 850, runnable: 27 });
+  test("/proc/stat gives jiffies, idle with iowait, interrupts, and the run queue", () => {
+    const text = "cpu  100 0 50 800 50 3 7 0 0 0\ncpu0 1 2 3\nprocs_running 27\nprocs_blocked 0\n";
+    expect(parseStat(text)).toEqual({ total: 1010, idle: 850, kernel: 10, runnable: 27 });
   });
 
   test("/proc/meminfo is read as kB", () => {

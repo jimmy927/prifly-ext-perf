@@ -13,6 +13,7 @@ function raw(second: number, over: Partial<LinuxRaw> = {}): LinuxRaw {
     cores: 4,
     total: 0,
     idle: 0,
+    kernel: 0,
     pgpgin: 0,
     pgpgout: 0,
     runnable: 1,

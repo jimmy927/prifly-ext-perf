@@ -7,15 +7,23 @@
  *
  * Linux is read every second, always: a few small files, for the chip.
  * Windows' counters come from one `typeperf` that stays running. The process
- * table, Windows' busiest processes and the cloud sessions are read only
- * while the window is open, since nothing else shows them — except that the
+ * table, Docker's containers, Windows' busiest processes and the cloud
+ * sessions are read only while the window is open, since nothing else shows them — except that the
  * process table is also read every 5 s whenever WSL's CPU or memory is not
  * green, for the nanny (`nanny.ts`), which names the sessions whose tools
  * cause the load. Every number the window shows is an average over the window
  * it asked for (`average.ts`).
  */
 
-import { averageLinux, averageProcs, averageWindows, windowOf } from "./average";
+import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
+import {
+  type Container,
+  type ContainerInfo,
+  type ContainerSnapshot,
+  containerInfos,
+  ownerOf,
+  readContainers,
+} from "./docker";
 import { McpConfig } from "./mcp";
 import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
 import {
@@ -62,6 +70,8 @@ const NANNY_MIN_SPAN = 3;
 /** The window asks every second; it counts as open while it asked within this. */
 const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
+/** Containers' names and mounts change only when one starts or stops. */
+const DOCKER_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
 
 /** One point of every sparkline: the average of one window. */
@@ -77,6 +87,11 @@ type State = {
   linux: LinuxRaw[];
   /** The last five minutes of process tables, one a second while the window is open. */
   procs: ProcSnapshot[];
+  /** Docker's containers, read with the process table. */
+  containers: ContainerSnapshot[];
+  /** What each container is, by id, as Docker last said (`docker.ts`). */
+  dockerInfos: Map<string, ContainerInfo>;
+  dockerAt: number;
   windows: WindowsSampler | null;
   info: WindowsInfo | null;
   topWindows: WindowsProcess[];
@@ -198,7 +213,19 @@ function open(current: State): boolean {
 
 function refreshWhileOpen(current: State): void {
   keep(current.procs, readProcs(), PROCS_KEEP);
+  const containers = readContainers();
+  keep(current.containers, containers, PROCS_KEEP);
   const now = Date.now();
+  // Docker is asked only when a container runs: with none there may be no Docker to ask.
+  if (containers.containers.size > 0 && now - current.dockerAt > DOCKER_EVERY) {
+    current.dockerAt = now;
+    containerInfos()
+      .then((infos) => {
+        current.dockerInfos = infos;
+      })
+      // Until Docker answers, the containers go by their ids.
+      .catch((error: unknown) => current.api.log("docker_failed", { error: String(error) }));
+  }
   if (current.windows !== null && now - current.topWindowsAt > TOP_WINDOWS_EVERY) {
     current.topWindowsAt = now;
     topProcesses()
@@ -337,6 +364,9 @@ export function activate(api: ExtensionApi): () => void {
     api,
     linux: [],
     procs: [],
+    containers: [],
+    dockerInfos: new Map(),
+    dockerAt: 0,
     windows,
     info: null,
     topWindows: [],
@@ -364,21 +394,33 @@ export function activate(api: ExtensionApi): () => void {
   };
 }
 
-/** The busiest processes this Linux sees, each with the session it works for. */
-function topLinux(table: Proc[], report: PriflyReport | null) {
+/**
+ * The busiest processes this Linux sees and Docker's busiest containers, each
+ * with the session it works for.
+ */
+function topLinux(table: Proc[], containers: Container[], report: PriflyReport | null) {
   const owners = ownersOf(table, report?.sessions ?? []);
-  return [...table]
+  const titles = new Map((report?.sessions ?? []).map((row) => [row.id, row.title]));
+  const procs = table.map((proc) => ({
+    pid: proc.pid,
+    what: commandLabel(proc.argv.length > 0 ? proc.argv : [proc.comm]),
+    session: owners.get(proc.pid) ?? "",
+    cpu: proc.cpu,
+    rss: proc.rss,
+    disk: proc.read + proc.write,
+  }));
+  const docker = containers.map((container) => ({
+    pid: 0,
+    what: `container ${container.name}`,
+    session: titles.get(container.session) ?? "",
+    cpu: container.cpu,
+    rss: container.memory,
+    disk: 0,
+  }));
+  return [...procs, ...docker]
     .sort((a, b) => b.cpu - a.cpu)
     .slice(0, 8)
-    .filter((proc) => proc.cpu >= 0.05)
-    .map((proc) => ({
-      pid: proc.pid,
-      what: commandLabel(proc.argv.length > 0 ? proc.argv : [proc.comm]),
-      session: owners.get(proc.pid) ?? "",
-      cpu: proc.cpu,
-      rss: proc.rss,
-      disk: proc.read + proc.write,
-    }));
+    .filter((row) => row.cpu >= 0.05);
 }
 
 /** Everything the page shows, each number averaged over the last `seconds`. */
@@ -390,10 +432,12 @@ function status(current: State, seconds: number) {
   const windows = windowsAverage(current, seconds);
   const linuxJudged = linuxVerdicts(linux.value);
   const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
+  const sessions = current.api.sessions();
+  const containers = averageContainers(current.containers, seconds, current.dockerInfos, (info) =>
+    ownerOf(info, sessions),
+  );
   const report =
-    procs === null
-      ? null
-      : priflyReport(table, process.pid, current.api.sessions(), new McpConfig());
+    procs === null ? null : priflyReport(table, process.pid, sessions, new McpConfig(), containers);
   return {
     headline: headline(places(current, linuxJudged, windowsJudged)),
     linux: {
@@ -411,7 +455,7 @@ function status(current: State, seconds: number) {
             error: current.windows.error,
           },
     history: history(current, seconds),
-    top: { linux: topLinux(table, report), windows: current.topWindows },
+    top: { linux: topLinux(table, containers, report), windows: current.topWindows },
     prifly: report,
     cloud: current.cloud,
     window: seconds,
@@ -431,6 +475,7 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
     current.procs.length = 0;
+    current.containers.length = 0;
     refreshWhileOpen(current);
   }
   return status(current, seconds);

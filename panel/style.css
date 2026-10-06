@@ -21,6 +21,8 @@
   --k-tools: #1baf7a;
   --k-host: #4a3aa7;
   --k-relay: #9aa0a8;
+  --k-containers: #0e8fb0;
+  --k-kernel: #a0607a;
 }
 :root.dark {
   color-scheme: dark;
@@ -41,6 +43,8 @@
   --k-tools: #199e70;
   --k-host: #6b5bd0;
   --k-relay: #5d636d;
+  --k-containers: #23a6c7;
+  --k-kernel: #c07a96;
 }
 * {
   box-sizing: border-box;
@@ -392,6 +396,23 @@ tr.group td {
 }
 .k-relay {
   background: var(--k-relay);
+}
+.k-containers {
+  background: var(--k-containers);
+}
+.k-docker {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--k-containers) 0 4px,
+    color-mix(in srgb, var(--k-containers) 55%, transparent) 4px 8px
+  );
+}
+.k-kernel {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--k-kernel) 0 4px,
+    color-mix(in srgb, var(--k-kernel) 55%, transparent) 4px 8px
+  );
 }
 .k-other {
   background: repeating-linear-gradient(
