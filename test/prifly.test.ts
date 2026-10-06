@@ -110,6 +110,24 @@ describe("prifly's processes", () => {
     expect(use?.pid).toBe(busy.pid);
   });
 
+  test("a land and its gate are gates, and count for the session whose drop it lands", () => {
+    const land = proc(host.pid, [
+      "bun",
+      "/p/land-branch/runner.ts",
+      "/w/.prifly/drops/aaaaaaaa/land/x.land",
+    ]);
+    const gate = proc(land.pid, ["bun", "test", "--parallel"], 4);
+    // Detached, so a host restart leaves it under init.
+    const op = proc(1, ["bun", "/p/git/op-runner.ts", "/ops/ops/1.json"]);
+    const hook = proc(op.pid, ["bun", "run", "check"], 2);
+    const withGates = priflyReport([...all, land, gate, op, hook], host.pid, known, config);
+    expect(withGates.kinds.gates).toMatchObject({ processes: 4, cpu: 6 });
+    expect(withGates.kinds.host.processes).toBe(2);
+    expect(withGates.total.processes).toBe(13);
+    // The writer's land is its session's; a git button's run is no session's.
+    expect(withGates.sessions[0]).toMatchObject({ processes: 8, cpu: 7 });
+  });
+
   test("a session with no tools is absent", () => {
     expect(toolUseOf([relay, claude], known, config).size).toBe(0);
   });

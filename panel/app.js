@@ -3,6 +3,7 @@
 // average over the trailing period. Asking is also what tells the extension the window
 // is open, so it reads the process table only then.
 
+import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
 import { drawMcp } from "./mcp.js";
@@ -199,150 +200,6 @@ function drawTiles(report, state) {
   );
 }
 
-// In the order the bars stack them; each kind's colour is `--k-<key>` in style.css.
-const KINDS = [
-  ["claude", "claude", "one per session"],
-  ["mcp", "MCP servers", "started by each claude"],
-  ["tools", "Tools sessions run", "shells, tests, builds"],
-  ["containers", "Containers sessions started", "Docker, known by what they mount"],
-  ["host", "Host", "prifly itself, its intent model and helpers"],
-  ["relay", "Relays", "keep sessions alive through a host restart"],
-];
-
-/** A segment wider than this share carries its name and value; narrower ones only on hover. */
-const LABEL_FROM = 9;
-
-/** One bar: `field` of every kind, stacked in proportion. */
-function segment(key, name, value, whole, format) {
-  const share = whole > 0 ? (100 * value) / whole : 0;
-  const node = el("div", {
-    class: `seg k-${key}`,
-    style: `width:${share}%`,
-    title: `${name}: ${format(value)}`,
-  });
-  if (share > LABEL_FROM) node.append(el("span", {}, `${name} ${format(value)}`));
-  return node;
-}
-
-/**
- * One bar: `field` of every kind, stacked in proportion. With `machine` — what
- * WSL uses in all, and the parts of it outside prifly that can be named — the
- * bar is the whole of WSL, so prifly's share of it shows; what no one can be
- * named for is "Other programs", and the free part is the empty track.
- */
-function stack(report, label, field, format, machine) {
-  const prifly = KINDS.reduce((total, [key]) => total + report.kinds[key][field], 0);
-  const whole = machine === undefined ? prifly : machine.total;
-  const segments = KINDS.map(([key, name]) =>
-    segment(key, name, report.kinds[key][field], whole, format),
-  );
-  if (machine !== undefined) {
-    let named = prifly;
-    for (const [key, name, value] of machine.outside) {
-      // Capped at what WSL uses: counters read a moment apart can sum a little past it.
-      const shown = Math.min(value, Math.max(0, machine.used - named));
-      named += shown;
-      segments.push(segment(key, name, shown, whole, format));
-    }
-    segments.push(
-      segment("other", "Other programs", Math.max(0, machine.used - named), whole, format),
-    );
-  }
-  const total =
-    machine === undefined
-      ? format(prifly)
-      : `prifly ${format(prifly)} · free ${format(Math.max(0, machine.total - Math.max(machine.used, prifly)))} of ${format(machine.total)}`;
-  return el(
-    "div",
-    { class: "stackrow" },
-    el("div", { class: "stacklabel" }, el("b", {}, label), el("span", { class: "num" }, total)),
-    el("div", { class: "stack" }, ...segments),
-  );
-}
-
-function drawKinds(report, state) {
-  const legend = el(
-    "div",
-    { class: "legend" },
-    ...KINDS.map(([key, name, how]) => {
-      const u = report.kinds[key];
-      // Docker hides a container's processes: containers count as one each.
-      const count = key === "containers" ? report.containerCount.sessions : u.processes;
-      return el(
-        "div",
-        { class: "lg" },
-        el("i", { class: `k-${key}` }),
-        el("span", {}, el("b", {}, name), el("small", {}, how)),
-        el("span", { class: "num" }, `${count} · ${bytes(u.rss)}`),
-      );
-    }),
-    el(
-      "div",
-      { class: "lg" },
-      el("i", { class: "k-docker" }),
-      el(
-        "span",
-        {},
-        el("b", {}, "Other containers"),
-        el("small", {}, "Docker containers no session started"),
-      ),
-      el(
-        "span",
-        { class: "num" },
-        `${report.containerCount.other} · ${bytes(report.otherContainers.rss)}`,
-      ),
-    ),
-    el(
-      "div",
-      { class: "lg" },
-      el("i", { class: "k-kernel" }),
-      el("span", {}, el("b", {}, "Kernel"), el("small", {}, "interrupts, charged to no process")),
-      el("span", { class: "num" }, cores(state.linux.sample.kernel)),
-    ),
-    el(
-      "div",
-      { class: "lg" },
-      el("i", { class: "k-other" }),
-      el(
-        "span",
-        {},
-        el("b", {}, "Other programs"),
-        el("small", {}, "the rest of WSL: other distros, kernel threads, programs run by hand"),
-      ),
-      el("span"),
-    ),
-    el(
-      "div",
-      { class: "lg" },
-      el("i", { class: "k-free" }),
-      el("span", {}, el("b", {}, "Free"), el("small", {}, "memory and CPU nobody uses")),
-      el("span"),
-    ),
-  );
-  const s = state.linux.sample;
-  // Resident memory overlaps a little (shared pages), so prifly may sum past "used": capped in `stack`.
-  const docker = report.otherContainers;
-  const memory = {
-    total: s.memTotal,
-    used: s.memTotal - s.memAvailable,
-    outside: [["docker", "Other containers", docker.rss]],
-  };
-  const cpu = {
-    total: s.cores,
-    used: (s.busy / 100) * s.cores,
-    outside: [
-      ["docker", "Other containers", docker.cpu],
-      ["kernel", "Kernel", s.kernel],
-    ],
-  };
-  $("kinds").replaceChildren(
-    stack(report, "Memory", "rss", bytes, memory),
-    stack(report, "CPU", "cpu", (n) => `${n.toFixed(1)} cores`, cpu),
-    stack(report, "Processes", "processes", String),
-    legend,
-  );
-}
-
 /** What the session's turn runs now, and the containers it started. */
 function doingNow(s) {
   const containers = s.containers.map((name) => el("span", { class: "chip" }, name));
@@ -464,6 +321,9 @@ addEventListener("hashchange", () =>
   showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine"),
 );
 showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine");
+drawSplit(() => {
+  if (last !== null) drawPrifly(last);
+});
 
 const LOOK = {
   "--background": "--bg",

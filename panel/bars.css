@@ -1,0 +1,51 @@
+/* The bars card split by session (bars.js): the switch, and a colour for each
+   of the sessions that weigh most (`sessionParts`). */
+:root {
+  --s-0: #2a78d6;
+  --s-1: #1baf7a;
+  --s-2: #eb6834;
+  --s-3: #c9497f;
+  --s-4: #0e8fb0;
+  --s-5: #b08a12;
+  --s-6: #6f8f2a;
+}
+:root.dark {
+  --s-0: #3987e5;
+  --s-1: #199e70;
+  --s-2: #d95926;
+  --s-3: #df6699;
+  --s-4: #23a6c7;
+  --s-5: #c99a2e;
+  --s-6: #86a83a;
+}
+.s-0 {
+  background: var(--s-0);
+}
+.s-1 {
+  background: var(--s-1);
+}
+.s-2 {
+  background: var(--s-2);
+}
+.s-3 {
+  background: var(--s-3);
+}
+.s-4 {
+  background: var(--s-4);
+}
+.s-5 {
+  background: var(--s-5);
+}
+.s-6 {
+  background: var(--s-6);
+}
+.subbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.subbar .every {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}

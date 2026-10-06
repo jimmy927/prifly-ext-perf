@@ -7,7 +7,9 @@
  * The extension runs inside the host, so `process.pid` is the host. Relays
  * outlive it: one started before the host last restarted hangs under init,
  * so relays are found by their command line wherever they hang. A relay's
- * last argument is its session's id.
+ * last argument is its session's id. The runners that land a branch or run
+ * a git button (and the test gate under them) are found the same way: they
+ * are detached, so they outlive the host too.
  */
 
 import { basename } from "node:path";
@@ -17,7 +19,7 @@ import { serverOf } from "./mcp";
 import type { ExtensionSession } from "./prifly-api";
 import type { Proc } from "./procs";
 
-export type Kind = "host" | "relay" | "claude" | "mcp" | "tools" | "containers";
+export type Kind = "host" | "relay" | "claude" | "mcp" | "tools" | "containers" | "gates";
 
 export type Usage = { processes: number; rss: number; cpu: number; read: number; write: number };
 
@@ -61,6 +63,7 @@ const noKinds = (): Record<Kind, Usage> => ({
   mcp: empty(),
   tools: empty(),
   containers: empty(),
+  gates: empty(),
 });
 
 /** A container as a `Usage`: its memory and CPU; its processes and disk are not read. */
@@ -101,6 +104,19 @@ function subtree(tree: Tree, root: Proc): Proc[] {
 }
 
 const isRelay = (proc: Proc) => proc.argv.some((arg) => arg.endsWith("relay/relay.ts"));
+/** A land of a writer's branch (`land-branch/runner.ts`) or a git button's run (`git/op-runner.ts`). */
+const isGateRunner = (proc: Proc) =>
+  proc.argv.some(
+    (arg) => arg.endsWith("land-branch/runner.ts") || arg.endsWith("git/op-runner.ts"),
+  );
+/** The session a writer's land is for: its state file is under `.prifly/drops/<first 8 of its id>/`. */
+export function gateSessionPrefix(runner: Proc): string | null {
+  for (const arg of runner.argv) {
+    const match = /\/\.prifly\/drops\/([0-9a-f]{8})\//.exec(arg);
+    if (match !== null) return match[1] ?? null;
+  }
+  return null;
+}
 const isClaude = (proc: Proc) =>
   proc.comm === "claude" || basename(proc.argv[0] ?? "") === "claude";
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
@@ -286,6 +302,16 @@ export function toolUseOf(
   return out;
 }
 
+/** A runner and the gate under it, counted as gates and, for a writer's land, as its session's. */
+function countGate(gates: Usage, tree: Tree, runner: Proc, sessions: SessionRow[]): void {
+  const prefix = gateSessionPrefix(runner);
+  const row = prefix === null ? undefined : sessions.find((s) => s.id.startsWith(prefix));
+  for (const proc of subtree(tree, runner)) {
+    add(gates, proc);
+    if (row !== undefined) add(row, proc);
+  }
+}
+
 /**
  * prifly's processes by kind and session, and Docker's containers beside
  * them: one a running session started counts as that session's, the rest are
@@ -307,8 +333,9 @@ export function priflyReport(
   if (host !== undefined) add(kinds.host, host);
   // Wherever they hang: a relay started before the host last restarted is init's child now.
   for (const relay of procs.filter(isRelay)) sessions.push(readRelay(acc, tree, relay, byId).row);
+  for (const runner of procs.filter(isGateRunner)) countGate(kinds.gates, tree, runner, sessions);
   for (const child of tree.children.get(hostPid) ?? []) {
-    if (isRelay(child)) continue;
+    if (isRelay(child) || isGateRunner(child)) continue;
     // prifly's own short `claude` calls — a branch name, a summary — are claude too.
     const kind = isClaude(child) ? kinds.claude : kinds.host;
     for (const proc of subtree(tree, child)) add(kind, proc);

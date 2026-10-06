@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Performance</title>
     <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="bars.css" />
     <script>
       // Before the first paint: the window says light or dark in the query.
       if (new URLSearchParams(location.search).get("theme") === "dark") {
@@ -48,7 +49,10 @@
 
       <section id="prifly" hidden>
         <div class="tiles" id="tiles"></div>
-        <div class="sub">By kind</div>
+        <div class="sub subbar">
+          <span>Split by</span>
+          <fieldset class="every" id="splitby" aria-label="Split the bars by"></fieldset>
+        </div>
         <div class="split">
           <div class="card" id="kinds"></div>
           <div class="card" id="mcp"></div>
