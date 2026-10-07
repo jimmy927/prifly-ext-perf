@@ -1,5 +1,5 @@
-/* The bars card split by session (bars.js): the switch, and a colour for each
-   of the sessions that weigh most (`sessionParts`). */
+/* The bars card (bars.js): the Kind | Session switch, a colour for each of the
+   sessions that weigh most (`sessionParts`), and the legend under the bars. */
 :root {
   --s-0: #2a78d6;
   --s-1: #1baf7a;
@@ -59,4 +59,72 @@
   text-transform: none;
   letter-spacing: 0;
   font-weight: 400;
+}
+/* The legend (`drawLegend`): aligned tables, one column per number. */
+.legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 0 32px;
+  align-items: start;
+  padding: 6px 12px 10px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+table.lgt {
+  table-layout: fixed;
+  margin-top: 6px;
+}
+table.lgt col.c-sw {
+  width: 18px;
+}
+table.lgt col.c-p {
+  width: 52px;
+}
+table.lgt col.c-c {
+  width: 58px;
+}
+table.lgt col.c-m {
+  width: 76px;
+}
+table.lgt th,
+table.lgt td {
+  padding: 4px 6px;
+}
+table.lgt th {
+  font-size: 11.5px;
+}
+table.lgt th:first-child {
+  color: var(--fg);
+  font-weight: 600;
+  padding-left: 0;
+}
+table.lgt td {
+  border-bottom-color: color-mix(in srgb, var(--border) 60%, transparent);
+}
+table.lgt tbody tr:hover td {
+  background: var(--muted);
+}
+table.lgt td.sw {
+  padding-left: 0;
+  padding-right: 0;
+}
+table.lgt td.sw i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+table.lgt td.who {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+table.lgt td.who small {
+  color: var(--muted-fg);
+  font-size: 11.5px;
+  margin-left: 8px;
+}
+table.lgt td.none {
+  color: var(--muted-fg);
+  opacity: 0.6;
 }

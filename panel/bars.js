@@ -1,7 +1,7 @@
 // The bars card on the prifly tab: Memory, CPU and Processes, each stacked
 // by what uses them, split either by kind or by session (the switch above it).
 
-import { $, bytes, cores, el } from "./format.js";
+import { $, bytes, el } from "./format.js";
 
 // In the order the bars stack them; each kind's colour is `--k-<key>` in style.css.
 const KINDS = [
@@ -164,14 +164,88 @@ export function drawSplit(redraw) {
   $("splitby").replaceChildren(...buttons);
 }
 
-/** One legend row: a colour, a name, what it is, and its numbers. */
-function legendRow(colour, name, how, numbers) {
+/** A number cell, right-aligned; a muted dash when there is nothing to count. */
+const numCell = (value, shown) =>
+  value > 0 ? el("td", { class: "r num" }, shown) : el("td", { class: "r num none" }, "—");
+
+/** One legend row: a colour, a name with what it is beside it, then processes, CPU and memory. */
+function legendRow(colour, name, how, { processes = 0, cpu = 0, rss = 0 }) {
+  return el(
+    "tr",
+    {},
+    el("td", { class: "sw" }, el("i", { class: colour })),
+    el("td", { class: "who", title: `${name}: ${how}` }, el("b", {}, name), el("small", {}, how)),
+    numCell(processes, String(processes)),
+    numCell(cpu >= 0.05 ? cpu : 0, cpu.toFixed(1)),
+    numCell(rss, bytes(rss)),
+  );
+}
+
+/** One legend group: a table whose heading row names it and its columns. */
+function legendGroup(title, rows) {
+  return el(
+    "table",
+    { class: "lgt" },
+    el(
+      "colgroup",
+      {},
+      ...["sw", "who", "p", "c", "m"].map((name) => el("col", { class: `c-${name}` })),
+    ),
+    el(
+      "thead",
+      {},
+      el(
+        "tr",
+        {},
+        el("th", { colspan: "2" }, title),
+        el("th", { class: "r" }, "Proc"),
+        el("th", { class: "r" }, "Cores"),
+        el("th", { class: "r" }, "Memory"),
+      ),
+    ),
+    el("tbody", {}, ...rows),
+  );
+}
+
+/**
+ * The legend: prifly's parts (its sessions, or its kinds) on the left; on the
+ * right what no session owns, and what WSL runs outside prifly down to the free part.
+ */
+function drawLegend(parts, report, memory, cpu, kernel) {
+  const docker = report.otherContainers;
+  const prifly = sumOf(parts.map((part) => part.use));
+  const row = (part) =>
+    legendRow(colourOf(part.key), part.name, part.how, { ...part.use, processes: part.count });
+  const own = new Set(OWN.map(([key]) => key));
+  const bySession = splitBy === "session";
+  const mine = parts.filter((part) => !bySession || !own.has(part.key));
+  const owned = bySession ? parts.filter((part) => own.has(part.key)) : [];
+  const outside = [
+    legendRow("k-docker", "Other containers", "Docker containers no session started", {
+      processes: report.containerCount.other,
+      cpu: docker.cpu,
+      rss: docker.rss,
+    }),
+    legendRow("k-kernel", "Kernel", "interrupts, charged to no process", { cpu: kernel }),
+    legendRow("k-other", "Other programs", "other distros, kernel threads, programs run by hand", {
+      cpu: Math.max(0, cpu.used - prifly.cpu - docker.cpu - kernel),
+      rss: Math.max(0, memory.used - prifly.rss - docker.rss),
+    }),
+    legendRow("k-free", "Free", "nobody uses it", {
+      cpu: Math.max(0, cpu.total - cpu.used),
+      rss: Math.max(0, memory.total - memory.used),
+    }),
+  ];
   return el(
     "div",
-    { class: "lg" },
-    el("i", { class: colour }),
-    el("span", {}, el("b", {}, name), el("small", {}, how)),
-    numbers === "" ? el("span") : el("span", { class: "num" }, numbers),
+    { class: "legend" },
+    legendGroup(bySession ? "Sessions" : "prifly, by kind", mine.map(row)),
+    el(
+      "div",
+      {},
+      owned.length > 0 ? legendGroup("prifly, no session", owned.map(row)) : null,
+      legendGroup("Outside prifly", outside),
+    ),
   );
 }
 
@@ -179,34 +253,6 @@ export function drawKinds(report, state) {
   const parts = splitBy === "session" ? sessionParts(report) : kindParts(report);
   const s = state.linux.sample;
   const docker = report.otherContainers;
-  const legend = el(
-    "div",
-    { class: "legend" },
-    ...parts.map((part) =>
-      legendRow(
-        colourOf(part.key),
-        part.name,
-        part.how,
-        splitBy === "session"
-          ? `${part.count} · ${cores(part.use.cpu)} · ${bytes(part.use.rss)}`
-          : `${part.count} · ${bytes(part.use.rss)}`,
-      ),
-    ),
-    legendRow(
-      "k-docker",
-      "Other containers",
-      "Docker containers no session started",
-      `${report.containerCount.other} · ${bytes(docker.rss)}`,
-    ),
-    legendRow("k-kernel", "Kernel", "interrupts, charged to no process", cores(s.kernel)),
-    legendRow(
-      "k-other",
-      "Other programs",
-      "the rest of WSL: other distros, kernel threads, programs run by hand",
-      "",
-    ),
-    legendRow("k-free", "Free", "memory and CPU nobody uses", ""),
-  );
   // Resident memory overlaps a little (shared pages), so prifly may sum past "used": capped in `stack`.
   const memory = {
     total: s.memTotal,
@@ -221,6 +267,7 @@ export function drawKinds(report, state) {
       ["kernel", "Kernel", s.kernel],
     ],
   };
+  const legend = drawLegend(parts, report, memory, cpu, s.kernel);
   $("kinds").replaceChildren(
     stack(parts, "Memory", "rss", bytes, memory),
     stack(parts, "CPU", "cpu", (n) => `${n.toFixed(1)} cores`, cpu),

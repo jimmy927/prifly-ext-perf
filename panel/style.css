@@ -430,28 +430,6 @@ tr.group td {
   background: var(--muted);
   box-shadow: inset 0 0 0 1px var(--border);
 }
-.legend {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 6px 18px;
-  padding: 12px;
-}
-.lg {
-  display: grid;
-  grid-template-columns: 10px 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
-.lg i {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-}
-.lg small {
-  display: block;
-  color: var(--muted-fg);
-  font-size: 11.5px;
-}
 .line .how {
   color: var(--muted-fg);
   font-size: 12px;
