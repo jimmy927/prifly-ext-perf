@@ -13,6 +13,9 @@ import {
   type GpuProcesses,
   type GpuRow,
   GREY_NEEDS_MIB,
+  type Grey,
+  greyState,
+  type HoldersFile,
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
@@ -38,6 +41,8 @@ export type GpuStatus =
       total: number;
       free: number;
       greyNeeds: number;
+      /** Grey words running, or whether they would start: the holders file first, else free memory. */
+      grey: Grey;
       holders: GpuRow[];
       /** Why who holds the card is not known; empty when it is. */
       unknown: string;
@@ -62,7 +67,7 @@ async function readCard(): Promise<Card | null> {
 
 const alive = (pid: number): boolean => existsSync(`/proc/${pid}`);
 
-function holdersFile(path: string) {
+function holdersFile(path: string): HoldersFile | null {
   try {
     return readHolders(readFileSync(path, "utf8"), Date.now(), alive);
   } catch {
@@ -118,7 +123,11 @@ export class GpuMonitor {
     if (!this.probed) return { loading: true };
     const card = this.card;
     if (card === null) return null;
-    const base = { loading: false as const, ...card, greyNeeds: GREY_NEEDS_MIB };
+    // The file does not depend on Windows' counters: grey is known without them.
+    const file = holdersFile(this.holdersPath);
+    const greyNeeds = file?.greyNeeds ?? GREY_NEEDS_MIB;
+    const grey = greyState(file, card.free, greyNeeds);
+    const base = { loading: false as const, ...card, greyNeeds, grey };
     const unknown = (why: string): GpuStatus => ({ ...base, holders: [], unknown: why });
     if (windows === null) return unknown("this is not WSL, so Windows' counters are not read.");
     const used = card.total - card.free;
@@ -128,6 +137,7 @@ export class GpuMonitor {
     if (this.processes === null) return unknown("still reading Windows' counters…");
     const uses = this.processes.uses.filter((use) => use.luid === luid);
     const shares = shareOut(uses, this.processes.names, used);
-    return { ...base, holders: rowsOf(shares, holdersFile(this.holdersPath)), unknown: "" };
+    const split = file !== null && file.holders.length > 0 ? file.holders : null;
+    return { ...base, holders: rowsOf(shares, split), unknown: "" };
   }
 }

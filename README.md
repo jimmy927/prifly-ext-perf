@@ -62,10 +62,16 @@ process that belongs to a prifly session is named with that session.
 
 With an NVIDIA card (`nvidia-smi` on the PATH, or in `/usr/lib/wsl/lib`), a
 full-width **Graphics card** card sits under WSL and Windows: free memory of
-the total, whether dictation's grey words fit (they need 2.2 GB free: 1800 MiB
-plus 500 spare; the dashed line on the bar), and who holds the rest. The
-headline says grey words are off when they do not fit, unless CPU, memory or
-disk is really short. Windows' per-process counters (`GPU Process Memory`)
+the total, whether dictation's grey words are on, would start or would not
+(starting needs 2.2 GB free: 1800 MiB plus 500 spare, or the `greyNeeds` the
+host writes in `gpu-holders.json`; the dashed line on the bar), and who holds
+the rest. Prifly's holders file decides first: while it lists a live grey
+worker the words are **on**, whatever is free (the worker holds its own
+memory); otherwise they **would start** when free memory reaches what they
+need, and **would not** when it is short. Without the file (older host,
+dictation not running, or older than ten minutes) free memory alone decides.
+The headline says grey words would not start when they would not, unless CPU,
+memory or disk is really short. Windows' per-process counters (`GPU Process Memory`)
 count each process at most what it has committed (NVIDIA Overlay has claimed
 34.9 GB dedicated on an 8 GB card), overlap, and so are scaled down to fit in
 what the WSL VM leaves; `vmwp`, taken as counted, is the WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`

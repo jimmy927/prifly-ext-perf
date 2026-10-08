@@ -134,17 +134,22 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
 
 export type Holder = { pid: number; which: string; label: string; model: string; mib: number };
 
+/** What `gpu-holders.json` says: prifly's live workers, and what grey words need when the host said. */
+export type HoldersFile = { holders: Holder[]; greyNeeds: number | null };
+
 /**
- * `gpu-holders.json`, read tolerantly. Null (use the one bar) when it is not
- * JSON, older than ten minutes, or holds nobody whose process is still alive.
- * A `which` this code does not know stays a holder; an entry that is not
+ * `gpu-holders.json`, read tolerantly. Null (as if there were no file) when it
+ * is not JSON, not shaped like the file, or older than ten minutes. Only
+ * holders whose process is still alive are kept, so `holders` may be empty.
+ * `greyNeeds` is the host's figure in MiB when it is a positive number, else
+ * null. A `which` this code does not know stays a holder; an entry that is not
  * shaped like one is skipped, not the whole file.
  */
 export function readHolders(
   text: string,
   now: number,
   alive: (pid: number) => boolean,
-): Holder[] | null {
+): HoldersFile | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -152,13 +157,30 @@ export function readHolders(
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const { at, holders } = parsed as { at?: unknown; holders?: unknown };
+  const { at, holders, greyNeeds } = parsed as {
+    at?: unknown;
+    holders?: unknown;
+    greyNeeds?: unknown;
+  };
   if (typeof at !== "number" || now - at > HOLDERS_FRESH_MS || !Array.isArray(holders)) return null;
   const kept = (holders as unknown[]).flatMap((entry) => {
     const holder = holderOf(entry);
     return holder !== null && alive(holder.pid) ? [holder] : [];
   });
-  return kept.length > 0 ? kept : null;
+  const needs = typeof greyNeeds === "number" && Number.isFinite(greyNeeds) && greyNeeds > 0;
+  return { holders: kept, greyNeeds: needs ? greyNeeds : null };
+}
+
+/** Whether dictation's grey words are running, would start on the free memory, or would not. */
+export type Grey = "on" | "fits" | "short";
+
+/**
+ * "on" when a live grey worker is listed (it holds its own memory, so free
+ * says nothing about it), else free memory against what the words need.
+ */
+export function greyState(file: HoldersFile | null, free: number, greyNeeds: number): Grey {
+  if (file?.holders.some((h) => h.which === "grey")) return "on";
+  return free >= greyNeeds ? "fits" : "short";
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");

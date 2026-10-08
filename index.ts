@@ -451,7 +451,7 @@ function status(current: State, seconds: number) {
   const report =
     procs === null ? null : priflyReport(table, process.pid, sessions, new McpConfig(), containers);
   const gpu = current.gpu.status(current.windows);
-  const greyOff = gpu !== null && !gpu.loading && gpu.free < gpu.greyNeeds;
+  const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {
     headline: withGreyWords(headline(places(current, linuxJudged, windowsJudged)), greyOff),
     gpu,

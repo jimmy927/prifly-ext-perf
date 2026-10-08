@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  GREY_NEEDS_MIB,
+  greyState,
   HOLDERS_FRESH_MS,
   parseGpuProcesses,
   parseNvidiaSmi,
@@ -237,34 +239,86 @@ describe("splitting the WSL share", () => {
 describe("gpu-holders.json", () => {
   const now = 10_000_000_000;
   const alive = (pid: number) => pid !== 99;
-  const file = (at: number, holders: unknown[]) => JSON.stringify({ at, holders });
+  const file = (at: number, holders: unknown[], extra: object = {}) =>
+    JSON.stringify({ at, holders, ...extra });
   const good = { pid: 1, which: "final", label: "Settled text", model: "parakeet", mib: 2400 };
+  const grey = { pid: 2, which: "grey", label: "Grey words", model: "gemma", mib: 1800 };
 
   test("a fresh file with live pids gives its holders", () => {
-    expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual([good]);
+    expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual({
+      holders: [good],
+      greyNeeds: null,
+    });
   });
 
   test("a file older than ten minutes is stale", () => {
     expect(readHolders(file(now - HOLDERS_FRESH_MS - 1, [good]), now, alive)).toBeNull();
   });
 
-  test("a holder whose pid is gone is dropped; with none left there is no split", () => {
+  test("a holder whose pid is gone is dropped; with none left the file still stands", () => {
     const dead = { ...good, pid: 99 };
-    expect(readHolders(file(now, [good, dead]), now, alive)).toEqual([good]);
-    expect(readHolders(file(now, [dead]), now, alive)).toBeNull();
+    expect(readHolders(file(now, [good, dead]), now, alive)?.holders).toEqual([good]);
+    expect(readHolders(file(now, [dead]), now, alive)?.holders).toEqual([]);
   });
 
   test("an unknown which stays a holder and nothing breaks", () => {
     const odd = { pid: 2, which: "future-thing", label: "Something new", model: "x", mib: 10 };
     const read = readHolders(file(now, [odd, { pid: "x" }, 5, null]), now, alive);
-    expect(read).toEqual([odd]);
-    expect(vmRows(100, read)[0]?.kind).toBe("g-wsl");
+    expect(read?.holders).toEqual([odd]);
+    expect(vmRows(100, read?.holders ?? null)[0]?.kind).toBe("g-wsl");
   });
 
   test("text that is not the file is no split", () => {
     expect(readHolders("not json", now, alive)).toBeNull();
     expect(readHolders("[]", now, alive)).toBeNull();
     expect(readHolders(JSON.stringify({ holders: [good] }), now, alive)).toBeNull();
+  });
+
+  test("greyNeeds is taken when it is a positive number, else left out", () => {
+    expect(readHolders(file(now, [], { greyNeeds: 2300 }), now, alive)?.greyNeeds).toBe(2300);
+    for (const bad of [0, -5, "2300", null, Number.NaN]) {
+      expect(readHolders(file(now, [], { greyNeeds: bad }), now, alive)?.greyNeeds).toBeNull();
+    }
+  });
+
+  test("a stale file's greyNeeds is not used", () => {
+    const stale = file(now - HOLDERS_FRESH_MS - 1, [], { greyNeeds: 3000 });
+    expect(readHolders(stale, now, alive)).toBeNull();
+  });
+
+  describe("grey words", () => {
+    const read = (holders: unknown[], extra: object = {}) =>
+      readHolders(file(now, holders, extra), now, alive);
+
+    test("a live grey worker is on, however little is free", () => {
+      expect(greyState(read([grey]), 1976, GREY_NEEDS_MIB)).toBe("on");
+    });
+
+    test("without one they would start when free memory reaches what they need", () => {
+      expect(greyState(read([good]), 2300, 2300)).toBe("fits");
+      expect(greyState(null, 5000, GREY_NEEDS_MIB)).toBe("fits");
+    });
+
+    test("without one and without room they would not start", () => {
+      expect(greyState(null, 1976, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([good]), 1976, GREY_NEEDS_MIB)).toBe("short");
+    });
+
+    test("a grey worker whose pid is gone is not on", () => {
+      expect(greyState(read([{ ...grey, pid: 99 }]), 1976, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([{ ...grey, pid: 99 }]), 4000, GREY_NEEDS_MIB)).toBe("fits");
+    });
+
+    test("a stale file says nothing: the numbers decide", () => {
+      const stale = readHolders(file(now - HOLDERS_FRESH_MS - 1, [grey]), now, alive);
+      expect(greyState(stale, 1976, GREY_NEEDS_MIB)).toBe("short");
+    });
+
+    test("the host's greyNeeds moves the line", () => {
+      const needs = read([good], { greyNeeds: 3000 });
+      expect(greyState(needs, 2500, needs?.greyNeeds ?? GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(needs, 3000, needs?.greyNeeds ?? GREY_NEEDS_MIB)).toBe("fits");
+    });
   });
 });
 
@@ -274,7 +328,7 @@ describe("the headline", () => {
   test("grey words being off is said when nothing else is short", () => {
     const out = withGreyWords(h("good", "Nothing is short."), true);
     expect(out.tone).toBe("warning");
-    expect(out.text).toContain("Grey words");
+    expect(out.text).toContain("Grey words would not start");
   });
 
   test("a real shortage wins, and fitting grey words change nothing", () => {
