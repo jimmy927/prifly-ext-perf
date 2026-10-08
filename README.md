@@ -58,6 +58,19 @@ process that belongs to a prifly session is named with that session.
 
 ![The Machine tab, dark](screenshots/machine-dark.png)
 
+### Graphics card
+
+With an NVIDIA card (`nvidia-smi` on the PATH, or in `/usr/lib/wsl/lib`), a
+full-width **Graphics card** card sits under WSL and Windows: free memory of
+the total, whether dictation's grey words fit (they need 2.2 GB free: 1800 MiB
+plus 500 spare; the dashed line on the bar), and who holds the rest. The
+headline says grey words are off when they do not fit, unless CPU, memory or
+disk is really short. Windows' per-process counters (`GPU Process Memory`)
+overlap, so they are scaled down to never sum past what is used; `vmwp` is the
+WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
+(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. Read only
+while the window is open.
+
 ### When it turns orange or red
 
 | | Orange | Red |
