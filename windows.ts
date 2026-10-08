@@ -203,14 +203,14 @@ export async function topProcesses(): Promise<WindowsProcess[]> {
 }
 
 /**
- * Graphics memory by process: every `GPU Process Memory` instance
- * (`G|pid_13644_luid_…_phys_0|bytes`) and every process's name (`P|pid|name`),
- * for `parseGpuProcesses` (`gpu.ts`).
+ * Graphics memory by process: every `GPU Process Memory` instance's dedicated
+ * usage (`G|pid_13644_luid_…_phys_0|bytes`) and total committed (`C|…|bytes`),
+ * and every process's name (`P|pid|name`), for `parseGpuProcesses` (`gpu.ts`).
  */
 export function gpuProcessCounters(): Promise<string> {
   return powershell(
-    "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage').CounterSamples | " +
-      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, 'G|{0}|{1}', $_.InstanceName, $_.CookedValue) }; " +
+    "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage','\\GPU Process Memory(*)\\Total Committed').CounterSamples | " +
+      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}', $(if ($_.Path -like '*committed') { 'C' } else { 'G' }), $_.InstanceName, $_.CookedValue) }; " +
       "Get-Process | % { 'P|' + $_.Id + '|' + $_.ProcessName }",
     20_000,
   );

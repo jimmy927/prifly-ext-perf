@@ -86,6 +86,25 @@ describe("GPU process counters", () => {
     expect(names.get(13644)).toBe("chrome");
     expect(names.get(7)).toBe("vmwp");
   });
+
+  test("a process counts at most what it has committed", () => {
+    // 2026-10-09: NVIDIA Overlay said 34,929 MB dedicated on the 8 GB card, 86 MB committed.
+    const { uses } = parseGpuProcesses(
+      [
+        `G|pid_38264_luid_${NVIDIA}_phys_0|${34929 * 2 ** 20}`,
+        `C|pid_38264_luid_${NVIDIA}_phys_0|${86 * 2 ** 20}`,
+        `G|pid_7_luid_${NVIDIA}_phys_0|${3820 * 2 ** 20}`,
+        `C|pid_7_luid_${NVIDIA}_phys_0|${3890 * 2 ** 20}`,
+        `G|pid_9_luid_${NVIDIA}_phys_0|${200 * 2 ** 20}`,
+      ].join("\n"),
+    );
+    const mib = (pid: number) => uses.find((u) => u.pid === pid)?.mib;
+    expect(mib(38264)).toBe(86);
+    expect(mib(7)).toBe(3820);
+    // No committed figure: the dedicated one stands.
+    expect(mib(9)).toBe(200);
+    expect(uses).toHaveLength(3);
+  });
 });
 
 describe("sharing the card out", () => {
@@ -99,15 +118,22 @@ describe("sharing the card out", () => {
   const total = (s: ReturnType<typeof shareOut>) =>
     s.vm + s.other + s.named.reduce((a, b) => a + b.mib, 0);
 
-  test("figures that overlap are scaled down so they never pass what is used", () => {
-    const shares = shareOut([use(1, 1000), use(2, 1500), use(3, 1500), use(4, 4000)], names, 4000);
-    expect(total(shares)).toBeCloseTo(4000, 6);
+  test("Windows figures that overlap are scaled into what the VM leaves; the VM is not", () => {
+    const shares = shareOut([use(1, 1000), use(2, 1500), use(3, 1500), use(4, 4000)], names, 6000);
+    expect(total(shares)).toBeCloseTo(6000, 6);
     expect(shares.other).toBeCloseTo(0, 6);
-    expect(shares.vm).toBeCloseTo(2000, 6);
+    expect(shares.vm).toBe(4000);
     // Two chrome processes are one program.
     expect(shares.named.map((s) => s.name)).toEqual(["chrome", "dwm"]);
     expect(shares.named[0]?.mib).toBeCloseTo(1500, 6);
     expect(shares.named[1]?.mib).toBeCloseTo(500, 6);
+  });
+
+  test("the VM never passes what is used, and then Windows gets nothing", () => {
+    const shares = shareOut([use(1, 500), use(4, 5000)], names, 4000);
+    expect(shares.vm).toBe(4000);
+    expect(shares.named).toEqual([]);
+    expect(total(shares)).toBeCloseTo(4000, 6);
   });
 
   test("what no counter owns is Windows other", () => {

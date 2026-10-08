@@ -66,8 +66,9 @@ the total, whether dictation's grey words fit (they need 2.2 GB free: 1800 MiB
 plus 500 spare; the dashed line on the bar), and who holds the rest. The
 headline says grey words are off when they do not fit, unless CPU, memory or
 disk is really short. Windows' per-process counters (`GPU Process Memory`)
-overlap, so they are scaled down to never sum past what is used; `vmwp` is the
-WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
+count each process at most what it has committed (NVIDIA Overlay has claimed
+34.9 GB dedicated on an 8 GB card), overlap, and so are scaled down to fit in
+what the WSL VM leaves; `vmwp`, taken as counted, is the WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
 (fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. Read only
 while the window is open.
 

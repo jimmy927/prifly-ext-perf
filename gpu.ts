@@ -59,10 +59,14 @@ const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i
 
 /**
  * `gpuProcessCounters()`'s lines. A pid listed more than once for one adapter
- * (`phys_0#2`) counts its largest, not the sum: the instances overlap.
+ * (`phys_0#2`) counts its largest, not the sum: the instances overlap. A
+ * process counts at most what it has committed: some report a dedicated usage
+ * far past the card (NVIDIA Overlay 34.9 GB on an 8 GB card, 86 MB committed),
+ * which would otherwise take most of the card's shares.
  */
 export function parseGpuProcesses(out: string): GpuProcesses {
-  const biggest = new Map<string, GpuUse>();
+  const dedicated = new Map<string, GpuUse>();
+  const committed = new Map<string, number>();
   const names = new Map<number, string>();
   for (const line of out.split(/\r?\n/)) {
     const [kind, first, second] = line.trim().split("|");
@@ -71,32 +75,42 @@ export function parseGpuProcesses(out: string): GpuProcesses {
       names.set(Number(first), second.toLowerCase());
       continue;
     }
-    const match = kind === "G" ? INSTANCE.exec(first) : null;
+    const match = kind === "G" || kind === "C" ? INSTANCE.exec(first) : null;
     const mib = Number(second) / 2 ** 20;
     if (match === null || !Number.isFinite(mib) || mib < 0) continue;
     const use = { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
     const key = `${use.luid}/${use.pid}`;
-    const seen = biggest.get(key);
-    if (seen === undefined || seen.mib < use.mib) biggest.set(key, use);
+    if (kind === "C") {
+      committed.set(key, Math.max(committed.get(key) ?? 0, mib));
+      continue;
+    }
+    const seen = dedicated.get(key);
+    if (seen === undefined || seen.mib < use.mib) dedicated.set(key, use);
   }
-  return { uses: [...biggest.values()], names };
+  const uses = [...dedicated].map(([key, use]) => {
+    const cap = committed.get(key);
+    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap) };
+  });
+  return { uses, names };
 }
 
 export type Share = { name: string; mib: number };
 export type Shares = {
   /** The biggest Windows programs, scaled so that all shares together are at most what is used. */
   named: Share[];
-  /** What the WSL VM (`vmwp`) holds. */
+  /** What the WSL VM (`vmwp`) holds, as counted: never scaled down. */
   vm: number;
   /** The rest of what is used: Windows programs not named, and what no counter owns. */
   other: number;
 };
 
 /**
- * One adapter's processes, as shares of what is used. Per-process figures
- * overlap (the desktop compositor counts memory its clients also count), so
- * they are scaled down until they sum to at most `used`; the rest is `other`.
- * A program with several processes (chrome) is one share.
+ * One adapter's processes, as shares of what is used. The WSL VM's figure is
+ * taken as it is (up to `used`): its dedicated and committed figures agree.
+ * Windows programs' figures overlap (the desktop compositor counts memory its
+ * clients also count), so they are scaled down until they fit in what the VM
+ * leaves; the rest is `other`. A program with several processes (chrome) is
+ * one share.
  */
 export function shareOut(uses: GpuUse[], names: Map<number, string>, used: number): Shares {
   const byName = new Map<string, number>();
@@ -104,9 +118,10 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
     const name = names.get(use.pid) ?? `pid ${use.pid}`;
     byName.set(name, (byName.get(name) ?? 0) + use.mib);
   }
-  const sum = [...byName.values()].reduce((a, b) => a + b, 0);
-  const scale = sum > used && sum > 0 ? used / sum : 1;
-  const vm = (byName.get(WSL_VM) ?? 0) * scale;
+  const vm = Math.min(byName.get(WSL_VM) ?? 0, used);
+  const room = used - vm;
+  const sum = [...byName].reduce((a, [name, mib]) => (name === WSL_VM ? a : a + mib), 0);
+  const scale = sum > room && sum > 0 ? room / sum : 1;
   const named = [...byName]
     .filter(([name]) => name !== WSL_VM)
     .map(([name, mib]) => ({ name, mib: mib * scale }))
