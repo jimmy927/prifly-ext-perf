@@ -122,10 +122,56 @@ describe("sharing the card out", () => {
     const rows = rowsOf(shares, null);
     expect(rows.map((r) => `${r.where}/${r.name}`)).toEqual([
       "WSL/prifly (WSL)",
-      "Windows/dwm",
+      "Windows/Desktop compositor (dwm)",
       "Windows/Windows other",
     ]);
     expect(rows.reduce((a, r) => a + r.mib, 0)).toBeCloseTo(4000, 6);
+  });
+});
+
+describe("plain names for Windows holders", () => {
+  const share = (name: string) => ({ named: [{ name, mib: 500 }], vm: 0, other: 0 });
+
+  test("a known process gets a plain name and a Why", () => {
+    expect(rowsOf(share("dwm"), null)[0]).toMatchObject({
+      where: "Windows",
+      kind: "g-win",
+      name: "Desktop compositor (dwm)",
+      what: "Draws every window on the monitors this card drives",
+    });
+    expect(rowsOf(share("msedgewebview2"), null)[0]).toMatchObject({
+      name: "Edge WebView",
+      what: "Web views inside apps",
+    });
+  });
+
+  test("an unknown process keeps its name and has no Why", () => {
+    expect(rowsOf(share("chrome"), null)[0]).toMatchObject({
+      where: "Windows",
+      name: "chrome",
+      what: "",
+    });
+  });
+
+  test("the bun helper is prifly, in its Windows colour", () => {
+    const [first, second] = rowsOf(
+      {
+        named: [
+          { name: "chrome", mib: 900 },
+          { name: "bun helper", mib: 500 },
+        ],
+        vm: 0,
+        other: 0,
+      },
+      null,
+    );
+    expect(first?.kind).toBe("g-win");
+    expect(second).toMatchObject({
+      where: "prifly",
+      kind: "g-win2",
+      name: "prifly window (bun Helper)",
+      what: "This window's web view",
+    });
   });
 });
 
@@ -155,6 +201,9 @@ describe("splitting the WSL share", () => {
 
   test("without holders it is one bar, and nothing without a VM share", () => {
     expect(vmRows(900, null).map((r) => r.name)).toEqual(["prifly (WSL)"]);
+    expect(vmRows(900, null)[0]?.what).toBe(
+      "prifly's models, not split: the host does not publish per-model figures yet",
+    );
     expect(vmRows(0, null)).toEqual([]);
   });
 });

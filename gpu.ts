@@ -183,7 +183,7 @@ export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
         kind: "g-wsl",
         where: "WSL",
         name: "prifly (WSL)",
-        what: "Everything WSL has on the card",
+        what: "prifly's models, not split: the host does not publish per-model figures yet",
         mib: vm,
       },
     ];
@@ -203,15 +203,42 @@ export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
   return rows;
 }
 
+type Known = { name: string; what: string; where?: GpuRow["where"] };
+
+/** Windows processes worth a plain name and a reason, by lowercased process name. */
+const KNOWN_WINDOWS: Record<string, Known> = {
+  dwm: {
+    name: "Desktop compositor (dwm)",
+    what: "Draws every window on the monitors this card drives",
+  },
+  "bun helper": {
+    name: "prifly window (bun Helper)",
+    what: "This window's web view",
+    where: "prifly",
+  },
+  explorer: { name: "Explorer", what: "Taskbar, Start, file windows" },
+  csrss: { name: "csrss", what: "Windows core" },
+  "nvidia overlay": { name: "NVIDIA overlay", what: "NVIDIA App's overlay" },
+  msedgewebview2: { name: "Edge WebView", what: "Web views inside apps" },
+};
+
+/** What the table shows for a Windows process: a plain name and a Why where it is known. */
+export function knownWindows(process: string): Known {
+  return KNOWN_WINDOWS[process.toLowerCase()] ?? { name: process, what: "" };
+}
+
 /** The card as the table lists it: prifly and WSL first, then Windows, biggest first. */
 export function rowsOf(shares: Shares, holders: Holder[] | null): GpuRow[] {
-  const windows: GpuRow[] = shares.named.map((share, i) => ({
-    kind: i === 0 ? "g-win" : "g-win2",
-    where: "Windows",
-    name: share.name,
-    what: "",
-    mib: share.mib,
-  }));
+  const windows: GpuRow[] = shares.named.map((share, i) => {
+    const known = knownWindows(share.name);
+    return {
+      kind: i === 0 ? "g-win" : "g-win2",
+      where: known.where ?? "Windows",
+      name: known.name,
+      what: known.what,
+      mib: share.mib,
+    };
+  });
   if (shares.other >= 1) {
     windows.push({
       kind: "g-win2",
