@@ -1,0 +1,62 @@
+.card.gpu {
+  margin-top: 14px;
+}
+.gpurow {
+  padding: 4px 12px 12px;
+}
+.gpubar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  border-radius: 4px;
+  overflow: visible;
+  background: var(--muted);
+}
+.gpubar > b:first-child {
+  border-radius: 4px 0 0 4px;
+}
+.gpubar > b.free {
+  background: transparent;
+}
+.gpubar > i.need {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 0;
+  border-left: 2px dashed var(--warning);
+}
+.g-final {
+  background: var(--k-dictation);
+}
+.g-grey {
+  background: color-mix(in srgb, var(--k-dictation) 55%, var(--k-intent));
+}
+.g-intent {
+  background: var(--k-intent);
+}
+.g-wsl {
+  background: var(--s-3);
+}
+.g-win {
+  background: var(--s-0);
+}
+.g-win2 {
+  background: color-mix(in srgb, var(--s-0) 55%, var(--muted));
+}
+.g-unknown {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--muted-fg) 0 4px,
+    color-mix(in srgb, var(--muted-fg) 55%, transparent) 4px 8px
+  );
+}
+.sw {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 8px;
+}
+.gpu table td.muted {
+  color: var(--muted-fg);
+}

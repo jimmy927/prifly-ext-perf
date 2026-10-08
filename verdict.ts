@@ -80,6 +80,20 @@ export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts
   };
 }
 
+/**
+ * Adds that dictation's grey words are off (the graphics card is short of
+ * memory) to a headline that has nothing else to say. A real shortage of CPU,
+ * memory or disk wins: it stays the headline, and its colour.
+ */
+export function withGreyWords<H extends { tone: Tone; text: string }>(h: H, greyOff: boolean): H {
+  if (!greyOff || h.tone !== "good") return h;
+  return {
+    ...h,
+    tone: "warning",
+    text: "Grey words are off: the graphics card is short of memory.",
+  };
+}
+
 const WORDS: Record<Resource, string> = { cpu: "CPU", memory: "memory", disk: "disk" };
 
 /** "Out of CPU in WSL." / "Short of memory in Windows." / "Everything is fine." */

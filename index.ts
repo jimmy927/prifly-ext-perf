@@ -24,6 +24,7 @@ import {
   ownerOf,
   readContainers,
 } from "./docker";
+import { GpuMonitor } from "./gpu-live";
 import { McpConfig } from "./mcp";
 import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
 import {
@@ -38,7 +39,14 @@ import {
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { type Proc, type ProcSnapshot, readProcs } from "./procs";
 import { endAt, HOUR, keep, windowEnds } from "./ring";
-import { headline, linuxVerdicts, type Tone, type Verdicts, windowsVerdicts } from "./verdict";
+import {
+  headline,
+  linuxVerdicts,
+  type Tone,
+  type Verdicts,
+  windowsVerdicts,
+  withGreyWords,
+} from "./verdict";
 import {
   machineBusy,
   topProcesses,
@@ -96,6 +104,8 @@ type State = {
   info: WindowsInfo | null;
   topWindows: WindowsProcess[];
   topWindowsAt: number;
+  /** The graphics card, read while the window is open (`gpu-live.ts`). */
+  gpu: GpuMonitor;
   cloud: { recent: number; total: number } | null;
   cloudAt: number;
   askedAt: number;
@@ -226,6 +236,7 @@ function refreshWhileOpen(current: State): void {
       // Until Docker answers, the containers go by their ids.
       .catch((error: unknown) => current.api.log("docker_failed", { error: String(error) }));
   }
+  current.gpu.refresh(current.windows, now);
   if (current.windows !== null && now - current.topWindowsAt > TOP_WINDOWS_EVERY) {
     current.topWindowsAt = now;
     topProcesses()
@@ -371,6 +382,7 @@ export function activate(api: ExtensionApi): () => void {
     info: null,
     topWindows: [],
     topWindowsAt: 0,
+    gpu: new GpuMonitor((event, data) => api.log(event, data)),
     cloud: null,
     cloudAt: 0,
     askedAt: 0,
@@ -438,8 +450,11 @@ function status(current: State, seconds: number) {
   );
   const report =
     procs === null ? null : priflyReport(table, process.pid, sessions, new McpConfig(), containers);
+  const gpu = current.gpu.status(current.windows);
+  const greyOff = gpu !== null && !gpu.loading && gpu.free < gpu.greyNeeds;
   return {
-    headline: headline(places(current, linuxJudged, windowsJudged)),
+    headline: withGreyWords(headline(places(current, linuxJudged, windowsJudged)), greyOff),
+    gpu,
     linux: {
       name: current.windows === null ? "Linux" : "WSL",
       sample: linux.value,

@@ -47,6 +47,32 @@ export type WindowsCounters = { at: number } & Record<Field, number | null>;
 /** Share of the machine busy, 0–100: the hypervisor's count, else Windows' own where it has none. */
 export const machineBusy = (c: WindowsCounters): number => c.machine ?? c.busy ?? 0;
 
+/** Every graphics adapter's dedicated memory in use, read next to the others; the `*` is each adapter's luid. */
+export const GPU_ADAPTER = "\\GPU Adapter Memory(*)\\Dedicated Usage";
+
+const ADAPTER_COLUMN =
+  /GPU Adapter Memory\(luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?\)\\Dedicated Usage$/i;
+
+/**
+ * The adapters' dedicated memory in use, in MiB, by luid (`0x…_0x…`), from one
+ * `typeperf` line. An adapter with several physical parts, or listed twice
+ * (`#2`), counts its largest. Null when the line has no such column: no GPU
+ * counters on this Windows.
+ */
+export function parseGpuAdapters(header: string, line: string): Map<string, number> | null {
+  const names = cells(header);
+  const values = cells(line);
+  if (values.length < 2 || Number.isNaN(Date.parse(values[0] ?? ""))) return null;
+  const adapters = new Map<string, number>();
+  names.forEach((name, column) => {
+    const luid = ADAPTER_COLUMN.exec(name)?.[1]?.toLowerCase();
+    const bytes = Number(values[column]);
+    if (luid === undefined || !Number.isFinite(bytes) || bytes < 0) return;
+    adapters.set(luid, Math.max(adapters.get(luid) ?? 0, bytes / 2 ** 20));
+  });
+  return adapters.size > 0 ? adapters : null;
+}
+
 export type WindowsInfo = { name: string; cores: number; memTotal: number };
 
 export type WindowsProcess = { name: string; cpu: number; memory: number };
@@ -85,6 +111,8 @@ export function parseRow(header: string, line: string, at: number): WindowsCount
 export class WindowsSampler {
   latest: WindowsCounters | null = null;
   readonly history: WindowsCounters[] = [];
+  /** The graphics adapters' memory in use now, MiB by luid; null where Windows has no such counters. */
+  gpuAdapters: Map<string, number> | null = null;
   error = "";
   private child: ChildProcess | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -97,9 +125,13 @@ export class WindowsSampler {
   }
 
   start(): void {
-    const child = spawn(TYPEPERF, [...Object.values(COUNTERS), "-si", String(this.everySeconds)], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      TYPEPERF,
+      [...Object.values(COUNTERS), GPU_ADAPTER, "-si", String(this.everySeconds)],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     this.child = child;
     let header = "";
     createInterface({ input: child.stdout }).on("line", (line) => {
@@ -111,6 +143,7 @@ export class WindowsSampler {
       const row = parseRow(header, line, Date.now());
       if (row !== null) {
         this.latest = row;
+        this.gpuAdapters = parseGpuAdapters(header, line);
         keep(this.history, row, HOUR);
         this.error = "";
       }
@@ -133,7 +166,7 @@ export class WindowsSampler {
   }
 }
 
-function powershell(script: string, timeout: number): Promise<string> {
+export function powershell(script: string, timeout: number): Promise<string> {
   return new Promise((done, fail) => {
     execFile(
       POWERSHELL,
@@ -167,6 +200,20 @@ export async function topProcesses(): Promise<WindowsProcess[]> {
     20_000,
   );
   return sumByName(out);
+}
+
+/**
+ * Graphics memory by process: every `GPU Process Memory` instance
+ * (`G|pid_13644_luid_…_phys_0|bytes`) and every process's name (`P|pid|name`),
+ * for `parseGpuProcesses` (`gpu.ts`).
+ */
+export function gpuProcessCounters(): Promise<string> {
+  return powershell(
+    "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage').CounterSamples | " +
+      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, 'G|{0}|{1}', $_.InstanceName, $_.CookedValue) }; " +
+      "Get-Process | % { 'P|' + $_.Id + '|' + $_.ProcessName }",
+    20_000,
+  );
 }
 
 export function sumByName(out: string): WindowsProcess[] {

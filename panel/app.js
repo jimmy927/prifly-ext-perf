@@ -6,6 +6,7 @@
 import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
+import { gpuCard } from "./gpu.js";
 import { drawMcp } from "./mcp.js";
 
 let last = null;
@@ -156,6 +157,10 @@ function drawMachine(state) {
   const cards = [linuxCard(state.linux)];
   if (state.windows !== null) cards.push(windowsCard(state.windows));
   $("hosts").replaceChildren(...cards);
+  // Full width, under the WSL and Windows cards, not a third in their grid.
+  $("gpu")?.remove();
+  const gpu = gpuCard(state.gpu);
+  if (gpu !== null) $("hosts").after(Object.assign(gpu, { id: "gpu" }));
   drawTop(state);
 }
 
