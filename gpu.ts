@@ -141,7 +141,18 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
   return { named, vm, other: Math.max(0, used - vm - shown) };
 }
 
-export type Holder = { pid: number; which: string; label: string; model: string; mib: number };
+/** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
+export type Part = { model: string; mib: number };
+
+export type Holder = {
+  pid: number;
+  which: string;
+  label: string;
+  model: string;
+  mib: number;
+  /** Each model's share of `mib`, where the host says; empty for a worker with one model. */
+  parts: Part[];
+};
 
 /**
  * `gpu-holders.json`, read tolerantly. Null (use the one bar) when it is not
@@ -180,11 +191,25 @@ function holderOf(entry: unknown): Holder | null {
     return null;
   }
   const which = str(h["which"]);
-  return { pid, which, label: str(h["label"]) || which || "prifly", model: str(h["model"]), mib };
+  const label = str(h["label"]) || which || "prifly";
+  return { pid, which, label, model: str(h["model"]), mib, parts: partsOf(h["parts"]) };
+}
+
+/** A holder's `parts`; entries not shaped like a part are left out. */
+function partsOf(value: unknown): Part[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const p = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    const { mib } = p;
+    const model = str(p["model"]);
+    return model !== "" && typeof mib === "number" && Number.isFinite(mib) && mib >= 0
+      ? [{ model, mib }]
+      : [];
+  });
 }
 
 export type GpuRow = {
-  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`. */
+  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`; a worker's later models add `g-part`. */
   kind: string;
   where: "Windows" | "prifly" | "WSL";
   name: string;
@@ -212,16 +237,21 @@ export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
       },
     ];
   }
-  const sum = holders.reduce((a, h) => a + h.mib, 0);
+  // A worker with several models is a row per model, so the expensive one shows.
+  const rows: GpuRow[] = holders.flatMap((h) => {
+    const kind = HOLDER_KIND[h.which] ?? "g-wsl";
+    const parts = h.parts.length > 0 ? h.parts : [{ model: h.model, mib: h.mib }];
+    return parts.map((part, i) => ({
+      kind: i === 0 ? kind : `${kind} g-part`,
+      where: "prifly" as const,
+      name: h.label,
+      what: part.model,
+      mib: part.mib,
+    }));
+  });
+  const sum = rows.reduce((a, r) => a + r.mib, 0);
   // The VM's figure is the card's own count: prifly's own may not exceed it.
-  const scale = sum > vm ? vm / sum : 1;
-  const rows: GpuRow[] = holders.map((h) => ({
-    kind: HOLDER_KIND[h.which] ?? "g-wsl",
-    where: "prifly",
-    name: h.label,
-    what: h.model,
-    mib: h.mib * scale,
-  }));
+  if (sum > vm) for (const row of rows) row.mib *= vm / sum;
   const rest = Math.max(0, vm - sum);
   if (rest >= 1) rows.push({ kind: "g-wsl", where: "WSL", name: "WSL other", what: "", mib: rest });
   return rows;

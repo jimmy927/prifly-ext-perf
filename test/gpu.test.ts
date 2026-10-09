@@ -208,6 +208,7 @@ describe("splitting the WSL share", () => {
     label: which,
     model: "m",
     mib,
+    parts: [],
   });
 
   test("prifly's holders and what is left of the VM's share as WSL other", () => {
@@ -216,6 +217,23 @@ describe("splitting the WSL share", () => {
       ["prifly", "final", 1500],
       ["prifly", "intent", 1000],
       ["WSL", "WSL other", 500],
+    ]);
+  });
+
+  test("a worker with several models is a row per model", () => {
+    const final = {
+      ...holder(1, "final", 2600),
+      label: "Dictation (final)",
+      parts: [
+        { model: "parakeet-tdt-0.6b", mib: 1800 },
+        { model: "whisper turbo", mib: 800 },
+      ],
+    };
+    const rows = vmRows(3000, [final]);
+    expect(rows.map((r) => [r.kind, r.name, r.what, r.mib])).toEqual([
+      ["g-final", "Dictation (final)", "parakeet-tdt-0.6b", 1800],
+      ["g-final g-part", "Dictation (final)", "whisper turbo", 800],
+      ["g-wsl", "WSL other", "", 400],
     ]);
   });
 
@@ -238,10 +256,23 @@ describe("gpu-holders.json", () => {
   const now = 10_000_000_000;
   const alive = (pid: number) => pid !== 99;
   const file = (at: number, holders: unknown[]) => JSON.stringify({ at, holders });
-  const good = { pid: 1, which: "final", label: "Settled text", model: "parakeet", mib: 2400 };
+  const good = {
+    pid: 1,
+    which: "final",
+    label: "Settled text",
+    model: "parakeet",
+    mib: 2400,
+    parts: [],
+  };
 
   test("a fresh file with live pids gives its holders", () => {
     expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual([good]);
+  });
+
+  test("a holder's parts are read, and parts not shaped like one are left out", () => {
+    const parts = [{ model: "parakeet", mib: 1800 }, { model: "", mib: 1 }, { model: "x" }, 7];
+    const read = readHolders(file(now, [{ ...good, parts }]), now, alive);
+    expect(read?.[0]?.parts).toEqual([{ model: "parakeet", mib: 1800 }]);
   });
 
   test("a file older than ten minutes is stale", () => {
@@ -255,7 +286,14 @@ describe("gpu-holders.json", () => {
   });
 
   test("an unknown which stays a holder and nothing breaks", () => {
-    const odd = { pid: 2, which: "future-thing", label: "Something new", model: "x", mib: 10 };
+    const odd = {
+      pid: 2,
+      which: "future-thing",
+      label: "Something new",
+      model: "x",
+      mib: 10,
+      parts: [],
+    };
     const read = readHolders(file(now, [odd, { pid: "x" }, 5, null]), now, alive);
     expect(read).toEqual([odd]);
     expect(vmRows(100, read)[0]?.kind).toBe("g-wsl");

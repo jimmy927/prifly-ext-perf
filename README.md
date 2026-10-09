@@ -69,7 +69,9 @@ disk is really short. Windows' per-process counters (`GPU Process Memory`)
 count each process at most what it has committed (NVIDIA Overlay has claimed
 34.9 GB dedicated on an 8 GB card), overlap, and so are scaled down to fit in
 what the WSL VM leaves; `vmwp`, taken as counted, is the WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
-(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. Read only
+(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. A worker
+whose entry carries `parts` (`[{model, mib}]`, such as Parakeet and turbo in
+dictation's final worker) is a row per model, the second one lighter. Read only
 while the window is open.
 
 ### When it turns orange or red
