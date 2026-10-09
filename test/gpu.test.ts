@@ -4,6 +4,7 @@ import {
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
+  readGreyNeeds,
   readHolders,
   rowsOf,
   shareOut,
@@ -297,6 +298,15 @@ describe("gpu-holders.json", () => {
     const read = readHolders(file(now, [odd, { pid: "x" }, 5, null]), now, alive);
     expect(read).toEqual([odd]);
     expect(vmRows(100, read)[0]?.kind).toBe("g-wsl");
+  });
+
+  test("the grey words' line is the host's, from a fresh file only", () => {
+    const say = (at: number, greyNeeds: unknown) => JSON.stringify({ at, greyNeeds, holders: [] });
+    expect(readGreyNeeds(say(now, 1536), now)).toBe(1536);
+    expect(readGreyNeeds(say(now - HOLDERS_FRESH_MS - 1, 1536), now)).toBeNull();
+    expect(readGreyNeeds(say(now, "1536"), now)).toBeNull();
+    expect(readGreyNeeds(say(now, 0), now)).toBeNull();
+    expect(readGreyNeeds("not json", now)).toBeNull();
   });
 
   test("text that is not the file is no split", () => {

@@ -62,8 +62,9 @@ process that belongs to a prifly session is named with that session.
 
 With an NVIDIA card (`nvidia-smi` on the PATH, or in `/usr/lib/wsl/lib`), a
 full-width **Graphics card** card sits under WSL and Windows: free memory of
-the total, whether dictation's grey words fit (they need 2.2 GB free: 1800 MiB
-plus 500 spare; the dashed line on the bar), and who holds the rest. The
+the total, whether dictation's grey words fit (the free memory prifly starts
+them at, `greyNeeds` in `gpu-holders.json`, else 1.5 GB; the dashed line on
+the bar), and who holds the rest. The
 headline says grey words are off when they do not fit, unless CPU, memory or
 disk is really short. Windows' per-process counters (`GPU Process Memory`)
 count each process at most what it has committed (NVIDIA Overlay has claimed

@@ -12,8 +12,12 @@
  * This file is the pure part: parsing and the sums. `gpu-live.ts` reads.
  */
 
-/** Dictation's grey words need 1800 MiB on the card (prifly's `GREY_NEEDS_MIB`) and a 500 MiB spare. */
-export const GREY_NEEDS_MIB = 1800 + 500;
+/**
+ * The free memory at which prifly starts dictation's grey words (its
+ * `GREY_START_FREE_MIB`), where the host has not said: it publishes its own as
+ * `greyNeeds` in `gpu-holders.json`, which wins (`readGreyNeeds`).
+ */
+export const GREY_NEEDS_MIB = 1536;
 /** A holders file older than this is from a host that is no longer running. */
 export const HOLDERS_FRESH_MS = 10 * 60_000;
 /** Windows processes named in the table; the rest of the card is "Windows other". */
@@ -179,6 +183,22 @@ export function readHolders(
     return holder !== null && alive(holder.pid) ? [holder] : [];
   });
   return kept.length > 0 ? kept : null;
+}
+
+/** `gpu-holders.json`'s `greyNeeds`, MiB; null where the file is not fresh or does not say. */
+export function readGreyNeeds(text: string, now: number): number | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { at, greyNeeds } = parsed as { at?: unknown; greyNeeds?: unknown };
+  if (typeof at !== "number" || now - at > HOLDERS_FRESH_MS) return null;
+  return typeof greyNeeds === "number" && Number.isFinite(greyNeeds) && greyNeeds > 0
+    ? greyNeeds
+    : null;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
