@@ -66,7 +66,7 @@ const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i
  */
 export function parseGpuProcesses(out: string): GpuProcesses {
   const dedicated = new Map<string, GpuUse>();
-  const committed = new Map<string, number>();
+  const committed = new Map<string, GpuUse>();
   const names = new Map<number, string>();
   for (const line of out.split(/\r?\n/)) {
     const [kind, first, second] = line.trim().split("|");
@@ -75,23 +75,33 @@ export function parseGpuProcesses(out: string): GpuProcesses {
       names.set(Number(first), second.toLowerCase());
       continue;
     }
-    const match = kind === "G" || kind === "C" ? INSTANCE.exec(first) : null;
-    const mib = Number(second) / 2 ** 20;
-    if (match === null || !Number.isFinite(mib) || mib < 0) continue;
-    const use = { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
-    const key = `${use.luid}/${use.pid}`;
-    if (kind === "C") {
-      committed.set(key, Math.max(committed.get(key) ?? 0, mib));
-      continue;
-    }
-    const seen = dedicated.get(key);
-    if (seen === undefined || seen.mib < use.mib) dedicated.set(key, use);
+    const use = kind === "G" || kind === "C" ? useOf(first, second) : null;
+    if (use !== null) keepLargest(kind === "C" ? committed : dedicated, use);
   }
-  const uses = [...dedicated].map(([key, use]) => {
+  return { uses: capped(dedicated, committed), names };
+}
+
+/** A pid's use per adapter, the largest seen: instances of one process overlap. */
+function keepLargest(into: Map<string, GpuUse>, use: GpuUse): void {
+  const key = `${use.luid}/${use.pid}`;
+  const seen = into.get(key);
+  if (seen === undefined || seen.mib < use.mib) into.set(key, use);
+}
+
+/** One counter line's instance name and byte count as a use; null where either is not one. */
+function useOf(instance: string, bytes: string): GpuUse | null {
+  const match = INSTANCE.exec(instance);
+  const mib = Number(bytes) / 2 ** 20;
+  if (match === null || !Number.isFinite(mib) || mib < 0) return null;
+  return { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
+}
+
+/** Each dedicated use, at most what its process has committed. */
+function capped(dedicated: Map<string, GpuUse>, committed: Map<string, GpuUse>): GpuUse[] {
+  return [...dedicated].map(([key, use]) => {
     const cap = committed.get(key);
-    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap) };
+    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap.mib) };
   });
-  return { uses, names };
 }
 
 export type Share = { name: string; mib: number };
