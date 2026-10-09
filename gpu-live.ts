@@ -20,6 +20,7 @@ import {
   rowsOf,
   shareOut,
 } from "./gpu";
+import { HOST } from "./host";
 import { gpuProcessCounters, type WindowsSampler } from "./windows";
 
 const SMI_EVERY = 5_000;
@@ -60,7 +61,17 @@ async function readCard(): Promise<Card | null> {
   return null;
 }
 
-const alive = (pid: number): boolean => existsSync(`/proc/${pid}`);
+/** Whether a pid is alive: by `/proc` inside WSL; on Windows itself, where there is none, by asking. */
+function alive(pid: number): boolean {
+  if (!HOST.native) return existsSync(`/proc/${pid}`);
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Alive, but not ours to signal.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 function holdersFile(path: string) {
   try {

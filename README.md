@@ -191,7 +191,24 @@ you are.
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 
-Outside WSL there is no Windows to read: the window shows Linux alone.
+On a Linux with no Windows around it there is no Windows to read: the window
+shows Linux alone.
+
+## When prifly runs on Windows itself
+
+A prifly host that runs natively on Windows (not inside WSL) reads Windows the
+same way, with `typeperf.exe` and `powershell.exe` from `%SystemRoot%\System32`.
+WSL's figures come from one `wsl.exe -e sh` that stays running: once a second
+it is sent the same one-line command, a `tail` of the `/proc` files above, and
+its output goes through the same parsers. It is started only while
+`wsl.exe --list --running` names a distro (asked once a minute while it names
+none), so the extension never boots the WSL VM; once started, though, it keeps
+the VM from shutting down while idle. With no WSL running, the WSL card says why
+and the window shows Windows alone.
+
+Such a host reads no process table and no Docker containers: the prifly tab
+says so, the nanny names no sessions, and **What uses the CPU now** lists
+Windows' processes only.
 
 ## Install
 

@@ -1,23 +1,22 @@
 /**
- * Windows' view, read from inside WSL: one `typeperf.exe` that stays running
- * and prints the counters below every second as CSV — about a second to
- * start once, where a PowerShell per poll would cost that every time. Which
- * processes use the CPU comes from one PowerShell that stays running too
- * (`topProcesses`).
+ * Windows' view, read from inside WSL or on Windows itself (`host.ts` says
+ * where the tools are): one `typeperf.exe` that stays running and prints the
+ * counters below every second as CSV — about a second to start once, where a
+ * PowerShell per poll would cost that every time. Which processes use the CPU
+ * comes from one PowerShell that stays running too (`topProcesses`).
  *
- * Outside WSL there is no Windows to read: `windowsTools()` is null and the
- * panel shows Linux alone.
+ * On a Linux with no Windows around it there is no Windows to read:
+ * `windowsTools()` is false and the panel shows Linux alone.
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { HOST } from "./host";
 import { HOUR, keep } from "./ring";
 import { ScriptShell, type ShellChild } from "./shell";
 
-const SYSTEM32 = "/mnt/c/Windows/System32";
-const TYPEPERF = `${SYSTEM32}/typeperf.exe`;
-const POWERSHELL = `${SYSTEM32}/WindowsPowerShell/v1.0/powershell.exe`;
+const { system32: SYSTEM32, typeperf: TYPEPERF, powershell: POWERSHELL } = HOST;
 
 /** Counter path → field, in the order `typeperf` is given them. */
 export const COUNTERS = {
@@ -129,9 +128,7 @@ export class WindowsSampler {
     const child = spawn(
       TYPEPERF,
       [...Object.values(COUNTERS), GPU_ADAPTER, "-si", String(this.everySeconds)],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
     );
     this.child = child;
     let header = "";
@@ -206,13 +203,13 @@ const shell = new ScriptShell(() =>
         "-EncodedCommand",
         Buffer.from(LOOP, "utf16le").toString("base64"),
       ],
-      // A Windows folder: the WSL one it would inherit is a UNC path cmd.exe dislikes.
+      // A Windows folder: the WSL one it would inherit from inside WSL is a UNC path cmd.exe dislikes.
       { stdio: ["pipe", "pipe", "ignore"], windowsHide: true, cwd: SYSTEM32 },
     ),
   ),
 );
 
-function fromProcess(child: ChildProcess): ShellChild {
+export function fromProcess(child: ChildProcess): ShellChild {
   child.stdout?.setEncoding("utf8");
   // A write to a child that has ended must not crash the extension.
   child.stdin?.on("error", () => {});

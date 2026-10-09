@@ -8,8 +8,15 @@
  * Pure of processes: the shell comes from a `spawn` function, so tests give it
  * a fake. `windows.ts` gives it one `powershell.exe` running a read loop,
  * where starting one per call made a console flash up on the Windows desktop
- * every few seconds.
+ * every few seconds. `wsl-exe.ts` gives it a plain `sh` inside WSL, with a
+ * `frame` that sends the command as it is and echoes the end marker after it.
  */
+
+/** The line that asks the child to run `script` and print `<<END-id>>` after it. */
+export type Frame = (id: string, script: string) => string;
+
+const BASE64_LINE: Frame = (id, script) =>
+  `${id} ${Buffer.from(script, "utf8").toString("base64")}\n`;
 
 /** The parts of a child process the shell uses. */
 export type ShellChild = {
@@ -32,14 +39,16 @@ type Running = { call: Call; id: string; timer: ReturnType<typeof setTimeout> };
 
 export class ScriptShell {
   private readonly spawn: () => ShellChild;
+  private readonly frame: Frame;
   private child: ShellChild | null = null;
   private running: Running | null = null;
   private readonly queue: Call[] = [];
   private buffer = "";
   private counter = 0;
 
-  constructor(spawn: () => ShellChild) {
+  constructor(spawn: () => ShellChild, frame: Frame = BASE64_LINE) {
     this.spawn = spawn;
+    this.frame = frame;
   }
 
   /** Runs `script` after the ones already asked for; its output, or an error. */
@@ -73,7 +82,7 @@ export class ScriptShell {
     }, call.timeout);
     this.running = { call, id, timer };
     try {
-      child.write(`${id} ${Buffer.from(call.script, "utf8").toString("base64")}\n`);
+      child.write(this.frame(id, call.script));
     } catch (error) {
       this.discard(error instanceof Error ? error : new Error(String(error)));
     }

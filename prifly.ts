@@ -420,3 +420,32 @@ export function priflyReport(
   const byCpu = sessions.sort((a, b) => b.cpu - a.cpu);
   return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount, own };
 }
+
+/**
+ * The busiest processes this Linux sees and Docker's busiest containers, each
+ * with the session it works for.
+ */
+export function topLinux(table: Proc[], containers: Container[], report: PriflyReport | null) {
+  const owners = ownersOf(table, report?.sessions ?? []);
+  const titles = new Map((report?.sessions ?? []).map((row) => [row.id, row.title]));
+  const procs = table.map((proc) => ({
+    pid: proc.pid,
+    what: commandLabel(proc.argv.length > 0 ? proc.argv : [proc.comm]),
+    session: owners.get(proc.pid) ?? "",
+    cpu: proc.cpu,
+    rss: proc.rss,
+    disk: proc.read + proc.write,
+  }));
+  const docker = containers.map((container) => ({
+    pid: 0,
+    what: `container ${container.name}`,
+    session: titles.get(container.session) ?? "",
+    cpu: container.cpu,
+    rss: container.memory,
+    disk: 0,
+  }));
+  return [...procs, ...docker]
+    .sort((a, b) => b.cpu - a.cpu)
+    .slice(0, 8)
+    .filter((row) => row.cpu >= 0.05);
+}

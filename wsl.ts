@@ -3,7 +3,8 @@
  * (`/proc/pressure`, docs.kernel.org/accounting/psi.html) for CPU, memory and
  * disk, and the counters in `/proc/stat`, `/proc/meminfo`, `/proc/vmstat` and
  * `/proc/loadavg` beside it. Inside WSL that is the WSL VM's view: one kernel
- * for every distro, Docker Desktop's included.
+ * for every distro, Docker Desktop's included. A host on Windows itself gets
+ * the same files' text through `wsl.exe` (`wsl-exe.ts`) and parses it here.
  *
  * PSI measures what matters — the share of time tasks were stalled waiting
  * for a resource — where load and percentages only say how busy it is.
@@ -107,10 +108,14 @@ export function parseStat(text: string): {
   return { total, idle, kernel, runnable: Number(running?.split(" ")[1] ?? 0) };
 }
 
-function vmstat(): { pgpgin: number; pgpgout: number } {
-  const text = readFileSync("/proc/vmstat", "utf8");
+function vmstat(text: string): { pgpgin: number; pgpgout: number } {
   const read = (name: string) => Number(new RegExp(`^${name} (\\d+)`, "m").exec(text)?.[1] ?? 0);
   return { pgpgin: read("pgpgin"), pgpgout: read("pgpgout") };
+}
+
+/** The cores `/proc/stat` lists (`cpu0`, `cpu1`, …): the WSL VM's, read from Windows. */
+export function coresOf(statText: string): number {
+  return statText.split("\n").filter((line) => /^cpu\d+ /.test(line)).length;
 }
 
 /**
@@ -133,27 +138,52 @@ export type LinuxRaw = Omit<
   io: Pressure | null;
 };
 
-/** Reads Linux now. Rates are made from two of these (`average.ts`). */
-export function readLinux(): LinuxRaw {
-  const stat = parseStat(readFileSync("/proc/stat", "utf8"));
-  const mem = parseMeminfo(readFileSync("/proc/meminfo", "utf8"));
+/** The text of the files one read of Linux needs; a pressure file is null where the kernel has none. */
+export type LinuxFiles = {
+  stat: string;
+  meminfo: string;
+  loadavg: string;
+  vmstat: string;
+  cpu: Pressure | null;
+  memory: Pressure | null;
+  io: Pressure | null;
+};
+
+/** One read of Linux from its files' text, taken at `at` on a machine of `cores`. */
+export function rawOf(files: LinuxFiles, at: number, cores: number): LinuxRaw {
+  const stat = parseStat(files.stat);
+  const mem = parseMeminfo(files.meminfo);
   const kb = (name: string) => (mem.get(name) ?? 0) * 1024;
-  const load = readFileSync("/proc/loadavg", "utf8").split(" ").slice(0, 3).map(Number);
+  const load = files.loadavg.split(" ").slice(0, 3).map(Number);
   return {
-    at: Date.now(),
-    cores: availableParallelism(),
+    at,
+    cores,
     total: stat.total,
     idle: stat.idle,
     kernel: stat.kernel,
-    ...vmstat(),
+    ...vmstat(files.vmstat),
     runnable: stat.runnable,
     load: [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0],
     memTotal: kb("MemTotal"),
     memAvailable: kb("MemAvailable"),
     swapTotal: kb("SwapTotal"),
     swapUsed: kb("SwapTotal") - kb("SwapFree"),
+    cpu: files.cpu,
+    memory: files.memory,
+    io: files.io,
+  };
+}
+
+/** Reads this Linux's own `/proc` now. Rates are made from two of these (`average.ts`). */
+export function readLinux(): LinuxRaw {
+  const files: LinuxFiles = {
+    stat: readFileSync("/proc/stat", "utf8"),
+    meminfo: readFileSync("/proc/meminfo", "utf8"),
+    loadavg: readFileSync("/proc/loadavg", "utf8"),
+    vmstat: readFileSync("/proc/vmstat", "utf8"),
     cpu: readPressure("cpu"),
     memory: readPressure("memory"),
     io: readPressure("io"),
   };
+  return rawOf(files, Date.now(), availableParallelism());
 }
