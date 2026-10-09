@@ -1,22 +1,22 @@
 /**
- * Windows' view, read from inside WSL: one `typeperf.exe` that stays running
- * and prints the counters below every second as CSV — about a second to
- * start once, where a PowerShell per poll would cost that every time. Which
- * processes use the CPU comes from PowerShell, and only while the window is
- * open (`topProcesses`).
+ * Windows' view, read from inside WSL or on Windows itself (`host.ts` says
+ * where the tools are): one `typeperf.exe` that stays running and prints the
+ * counters below every second as CSV — about a second to start once, where a
+ * PowerShell per poll would cost that every time. Which processes use the CPU
+ * comes from one PowerShell that stays running too (`topProcesses`).
  *
- * Outside WSL there is no Windows to read: `windowsTools()` is null and the
- * panel shows Linux alone.
+ * On a Linux with no Windows around it there is no Windows to read:
+ * `windowsTools()` is false and the panel shows Linux alone.
  */
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { HOST } from "./host";
 import { HOUR, keep } from "./ring";
+import { ScriptShell, type ShellChild } from "./shell";
 
-const SYSTEM32 = "/mnt/c/Windows/System32";
-const TYPEPERF = `${SYSTEM32}/typeperf.exe`;
-const POWERSHELL = `${SYSTEM32}/WindowsPowerShell/v1.0/powershell.exe`;
+const { system32: SYSTEM32, typeperf: TYPEPERF, powershell: POWERSHELL } = HOST;
 
 /** Counter path → field, in the order `typeperf` is given them. */
 export const COUNTERS = {
@@ -128,9 +128,7 @@ export class WindowsSampler {
     const child = spawn(
       TYPEPERF,
       [...Object.values(COUNTERS), GPU_ADAPTER, "-si", String(this.everySeconds)],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
     );
     this.child = child;
     let header = "";
@@ -166,15 +164,80 @@ export class WindowsSampler {
   }
 }
 
-export function powershell(script: string, timeout: number): Promise<string> {
-  return new Promise((done, fail) => {
-    execFile(
+/**
+ * What the one `powershell.exe` runs: read a line `<id> <script in base64>`
+ * from stdin, run the script, print `<<END-id>>` after its output (and
+ * `<<ERR-id>>message` before that if it threw). `-Command -` would not do: it
+ * reads stdin to the end before it runs anything. Output is UTF-8 without a
+ * byte order mark, so a process name outside the OEM code page is not mangled.
+ */
+const LOOP = `
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  $at = $line.IndexOf(' ')
+  $id = $line.Substring(0, $at)
+  try {
+    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line.Substring($at + 1)))
+    & ([scriptblock]::Create($text))
+  } catch {
+    Write-Output ("\`n<<ERR-" + $id + ">>" + $_.Exception.Message)
+  }
+  Write-Output ("\`n<<END-" + $id + ">>")
+}
+`;
+
+/**
+ * The one `powershell.exe` this process uses, started on the first script.
+ * Starting one per script made a console flash up on the Windows desktop
+ * every few seconds.
+ */
+const shell = new ScriptShell(() =>
+  fromProcess(
+    spawn(
       POWERSHELL,
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { timeout, maxBuffer: 4 << 20 },
-      (error, stdout) => (error === null ? done(stdout) : fail(error)),
-    );
-  });
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(LOOP, "utf16le").toString("base64"),
+      ],
+      // A Windows folder: the WSL one it would inherit from inside WSL is a UNC path cmd.exe dislikes.
+      { stdio: ["pipe", "pipe", "ignore"], windowsHide: true, cwd: SYSTEM32 },
+    ),
+  ),
+);
+
+export function fromProcess(child: ChildProcess): ShellChild {
+  child.stdout?.setEncoding("utf8");
+  // A write to a child that has ended must not crash the extension.
+  child.stdin?.on("error", () => {});
+  return {
+    write: (text) => {
+      child.stdin?.write(text, "utf8");
+    },
+    kill: () => {
+      child.kill();
+    },
+    onData: (listener) => {
+      child.stdout?.on("data", listener);
+    },
+    onExit: (listener) => {
+      child.on("error", (error) => listener(error.message));
+      child.on("exit", (code, signal) => listener(`exit ${code ?? signal}`));
+    },
+  };
+}
+
+/** Runs a PowerShell script in the shared shell, one at a time; its stdout, or an error. */
+export function powershell(script: string, timeout: number): Promise<string> {
+  return shell.run(script, timeout);
+}
+
+/** Ends the shared PowerShell; a later script starts a new one. */
+export function stopPowershell(): void {
+  shell.close();
 }
 
 /** The machine's name, logical cores and memory, asked once. */

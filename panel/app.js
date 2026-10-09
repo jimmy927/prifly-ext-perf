@@ -73,6 +73,11 @@ function linuxCard(linux) {
   ]);
 }
 
+/** WSL where it is not read (a host on Windows itself, with no WSL running): why, in place of its rows. */
+function absentCard(why) {
+  return hostCard("WSL", "not on this host", [el("p", { class: "muted" }, why)]);
+}
+
 function windowsRows(c, info, v) {
   const share = c.wslVm === null ? "" : `WSL VM ${pct(c.wslVm / info.cores)} of the machine`;
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
@@ -136,7 +141,7 @@ function drawTop(state) {
   const rows = [
     ...state.top.linux.map((p) =>
       topRow(
-        state.linux.name,
+        state.linux?.name ?? "WSL",
         p.session === "" ? p.what : `${p.what} — ${p.session}`,
         cores(p.cpu),
         bytes(p.rss),
@@ -154,7 +159,7 @@ function drawTop(state) {
 function drawMachine(state) {
   $("verdict").className = `verdict ${state.headline.tone}`;
   $("headline").textContent = state.headline.text;
-  const cards = [linuxCard(state.linux)];
+  const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
   if (state.windows !== null) cards.push(windowsCard(state.windows));
   $("hosts").replaceChildren(...cards);
   // Full width, under the WSL and Windows cards, not a third in their grid.
@@ -281,6 +286,11 @@ function drawSessions(report, state) {
 }
 
 function drawPrifly(state) {
+  // A host on Windows itself reads no process table: the tab says so instead.
+  const absent = state.processes ?? "";
+  $("prifly-absent").hidden = absent === "";
+  $("prifly-absent").textContent = absent;
+  $("prifly-body").hidden = absent !== "";
   const report = state.prifly;
   if (report === null) return;
   drawTiles(report, state);

@@ -6,6 +6,7 @@ import {
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
+  readGreyNeeds,
   readHolders,
   rowsOf,
   shareOut,
@@ -210,6 +211,7 @@ describe("splitting the WSL share", () => {
     label: which,
     model: "m",
     mib,
+    parts: [],
   });
 
   test("prifly's holders and what is left of the VM's share as WSL other", () => {
@@ -218,6 +220,23 @@ describe("splitting the WSL share", () => {
       ["prifly", "final", 1500],
       ["prifly", "intent", 1000],
       ["WSL", "WSL other", 500],
+    ]);
+  });
+
+  test("a worker with several models is a row per model", () => {
+    const final = {
+      ...holder(1, "final", 2600),
+      label: "Dictation (final)",
+      parts: [
+        { model: "parakeet-tdt-0.6b", mib: 1800 },
+        { model: "whisper turbo", mib: 800 },
+      ],
+    };
+    const rows = vmRows(3000, [final]);
+    expect(rows.map((r) => [r.kind, r.name, r.what, r.mib])).toEqual([
+      ["g-final", "Dictation (final)", "parakeet-tdt-0.6b", 1800],
+      ["g-final g-part", "Dictation (final)", "whisper turbo", 800],
+      ["g-wsl", "WSL other", "", 400],
     ]);
   });
 
@@ -239,33 +258,65 @@ describe("splitting the WSL share", () => {
 describe("gpu-holders.json", () => {
   const now = 10_000_000_000;
   const alive = (pid: number) => pid !== 99;
-  const file = (at: number, holders: unknown[], extra: object = {}) =>
-    JSON.stringify({ at, holders, ...extra });
-  const good = { pid: 1, which: "final", label: "Settled text", model: "parakeet", mib: 2400 };
-  const grey = { pid: 2, which: "grey", label: "Grey words", model: "gemma", mib: 1800 };
+  const file = (at: number, holders: unknown[]) => JSON.stringify({ at, holders });
+  const grey = {
+    pid: 2,
+    which: "grey",
+    label: "Dictation (grey words)",
+    model: "parakeet-tdt-0.6b",
+    mib: 1800,
+    parts: [],
+  };
+  const good = {
+    pid: 1,
+    which: "final",
+    label: "Settled text",
+    model: "parakeet",
+    mib: 2400,
+    parts: [],
+  };
 
   test("a fresh file with live pids gives its holders", () => {
-    expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual({
-      holders: [good],
-      greyNeeds: null,
-    });
+    expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual([good]);
+  });
+
+  test("a holder's parts are read, and parts not shaped like one are left out", () => {
+    const parts = [{ model: "parakeet", mib: 1800 }, { model: "", mib: 1 }, { model: "x" }, 7];
+    const read = readHolders(file(now, [{ ...good, parts }]), now, alive);
+    expect(read?.[0]?.parts).toEqual([{ model: "parakeet", mib: 1800 }]);
   });
 
   test("a file older than ten minutes is stale", () => {
     expect(readHolders(file(now - HOLDERS_FRESH_MS - 1, [good]), now, alive)).toBeNull();
   });
 
-  test("a holder whose pid is gone is dropped; with none left the file still stands", () => {
+  test("a holder whose pid is gone is dropped; with none left there is no split", () => {
     const dead = { ...good, pid: 99 };
-    expect(readHolders(file(now, [good, dead]), now, alive)?.holders).toEqual([good]);
-    expect(readHolders(file(now, [dead]), now, alive)?.holders).toEqual([]);
+    expect(readHolders(file(now, [good, dead]), now, alive)).toEqual([good]);
+    expect(readHolders(file(now, [dead]), now, alive)).toBeNull();
   });
 
   test("an unknown which stays a holder and nothing breaks", () => {
-    const odd = { pid: 2, which: "future-thing", label: "Something new", model: "x", mib: 10 };
+    const odd = {
+      pid: 2,
+      which: "future-thing",
+      label: "Something new",
+      model: "x",
+      mib: 10,
+      parts: [],
+    };
     const read = readHolders(file(now, [odd, { pid: "x" }, 5, null]), now, alive);
-    expect(read?.holders).toEqual([odd]);
-    expect(vmRows(100, read?.holders ?? null)[0]?.kind).toBe("g-wsl");
+    expect(read).toEqual([odd]);
+    expect(vmRows(100, read)[0]?.kind).toBe("g-wsl");
+  });
+
+  test("the grey words' line is the host's, from a fresh file only", () => {
+    const say = (at: number, greyNeeds: unknown) => JSON.stringify({ at, greyNeeds, holders: [] });
+    expect(readGreyNeeds(say(now, 1536), now)).toBe(1536);
+    expect(readGreyNeeds(say(now - HOLDERS_FRESH_MS - 1, 1536), now)).toBeNull();
+    expect(readGreyNeeds(say(now, "1536"), now)).toBeNull();
+    expect(readGreyNeeds(say(now, 0), now)).toBeNull();
+    expect(readGreyNeeds("not json", now)).toBeNull();
   });
 
   test("text that is not the file is no split", () => {
@@ -274,24 +325,11 @@ describe("gpu-holders.json", () => {
     expect(readHolders(JSON.stringify({ holders: [good] }), now, alive)).toBeNull();
   });
 
-  test("greyNeeds is taken when it is a positive number, else left out", () => {
-    expect(readHolders(file(now, [], { greyNeeds: 2300 }), now, alive)?.greyNeeds).toBe(2300);
-    for (const bad of [0, -5, "2300", null, Number.NaN]) {
-      expect(readHolders(file(now, [], { greyNeeds: bad }), now, alive)?.greyNeeds).toBeNull();
-    }
-  });
-
-  test("a stale file's greyNeeds is not used", () => {
-    const stale = file(now - HOLDERS_FRESH_MS - 1, [], { greyNeeds: 3000 });
-    expect(readHolders(stale, now, alive)).toBeNull();
-  });
-
   describe("grey words", () => {
-    const read = (holders: unknown[], extra: object = {}) =>
-      readHolders(file(now, holders, extra), now, alive);
+    const read = (holders: unknown[], at = now) => readHolders(file(at, holders), now, alive);
 
     test("a live grey worker is on, however little is free", () => {
-      expect(greyState(read([grey]), 1976, GREY_NEEDS_MIB)).toBe("on");
+      expect(greyState(read([good, grey]), 379, GREY_NEEDS_MIB)).toBe("on");
     });
 
     test("without one they would start when free memory reaches what they need", () => {
@@ -300,24 +338,61 @@ describe("gpu-holders.json", () => {
     });
 
     test("without one and without room they would not start", () => {
-      expect(greyState(null, 1976, GREY_NEEDS_MIB)).toBe("short");
-      expect(greyState(read([good]), 1976, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(null, 379, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([good]), 379, GREY_NEEDS_MIB)).toBe("short");
     });
 
     test("a grey worker whose pid is gone is not on", () => {
-      expect(greyState(read([{ ...grey, pid: 99 }]), 1976, GREY_NEEDS_MIB)).toBe("short");
-      expect(greyState(read([{ ...grey, pid: 99 }]), 4000, GREY_NEEDS_MIB)).toBe("fits");
+      const gone = { ...grey, pid: 99 };
+      expect(greyState(read([good, gone]), 379, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([gone]), 4000, GREY_NEEDS_MIB)).toBe("fits");
     });
 
     test("a stale file says nothing: the numbers decide", () => {
-      const stale = readHolders(file(now - HOLDERS_FRESH_MS - 1, [grey]), now, alive);
-      expect(greyState(stale, 1976, GREY_NEEDS_MIB)).toBe("short");
+      const stale = read([grey], now - HOLDERS_FRESH_MS - 1);
+      expect(greyState(stale, 379, GREY_NEEDS_MIB)).toBe("short");
     });
 
-    test("the host's greyNeeds moves the line", () => {
-      const needs = read([good], { greyNeeds: 3000 });
-      expect(greyState(needs, 2500, needs?.greyNeeds ?? GREY_NEEDS_MIB)).toBe("short");
-      expect(greyState(needs, 3000, needs?.greyNeeds ?? GREY_NEEDS_MIB)).toBe("fits");
+    test("the real file: both workers alive, 379 MiB free, grey is on", () => {
+      const real = JSON.stringify({
+        at: now,
+        greyNeeds: 1536,
+        holders: [
+          {
+            pid: 2672194,
+            which: "final",
+            label: "Dictation (final)",
+            model: "parakeet-tdt-0.6b + whisper turbo",
+            mib: 3800,
+            parts: [
+              { model: "parakeet-tdt-0.6b", mib: 1800 },
+              { model: "whisper turbo", mib: 2000 },
+            ],
+          },
+          {
+            pid: 2675350,
+            which: "grey",
+            label: "Dictation (grey words)",
+            model: "parakeet-tdt-0.6b",
+            mib: 1800,
+          },
+        ],
+      });
+      const needs = readGreyNeeds(real, now) ?? GREY_NEEDS_MIB;
+      expect(
+        greyState(
+          readHolders(real, now, () => true),
+          379,
+          needs,
+        ),
+      ).toBe("on");
+      expect(
+        greyState(
+          readHolders(real, now, (pid) => pid !== 2675350),
+          379,
+          needs,
+        ),
+      ).toBe("short");
     });
   });
 });

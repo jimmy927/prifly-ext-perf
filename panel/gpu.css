@@ -31,6 +31,10 @@
 .g-grey {
   background: color-mix(in srgb, var(--k-dictation) 55%, var(--k-intent));
 }
+/* A worker's second model (turbo beside Parakeet): its colour, lighter. */
+.g-part {
+  background-image: linear-gradient(rgb(255 255 255 / 0.35), rgb(255 255 255 / 0.35));
+}
 .g-intent {
   background: var(--k-intent);
 }

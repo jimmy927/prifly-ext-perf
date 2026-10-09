@@ -15,14 +15,15 @@ import {
   GREY_NEEDS_MIB,
   type Grey,
   greyState,
-  type HoldersFile,
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
+  readGreyNeeds,
   readHolders,
   rowsOf,
   shareOut,
 } from "./gpu";
+import { HOST } from "./host";
 import { gpuProcessCounters, type WindowsSampler } from "./windows";
 
 const SMI_EVERY = 5_000;
@@ -65,14 +66,31 @@ async function readCard(): Promise<Card | null> {
   return null;
 }
 
-const alive = (pid: number): boolean => existsSync(`/proc/${pid}`);
-
-function holdersFile(path: string): HoldersFile | null {
+/** Whether a pid is alive: by `/proc` inside WSL; on Windows itself, where there is none, by asking. */
+function alive(pid: number): boolean {
+  if (!HOST.native) return existsSync(`/proc/${pid}`);
   try {
-    return readHolders(readFileSync(path, "utf8"), Date.now(), alive);
-  } catch {
-    return null;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Alive, but not ours to signal.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** The holders file's say: who holds the card, and the free memory grey words start at. */
+function holdersFile(path: string) {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return { holders: null, greyNeeds: GREY_NEEDS_MIB };
+  }
+  const now = Date.now();
+  return {
+    holders: readHolders(text, now, alive),
+    greyNeeds: readGreyNeeds(text, now) ?? GREY_NEEDS_MIB,
+  };
 }
 
 export class GpuMonitor {
@@ -125,9 +143,8 @@ export class GpuMonitor {
     if (card === null) return null;
     // The file does not depend on Windows' counters: grey is known without them.
     const file = holdersFile(this.holdersPath);
-    const greyNeeds = file?.greyNeeds ?? GREY_NEEDS_MIB;
-    const grey = greyState(file, card.free, greyNeeds);
-    const base = { loading: false as const, ...card, greyNeeds, grey };
+    const grey = greyState(file.holders, card.free, file.greyNeeds);
+    const base = { loading: false as const, ...card, greyNeeds: file.greyNeeds, grey };
     const unknown = (why: string): GpuStatus => ({ ...base, holders: [], unknown: why });
     if (windows === null) return unknown("this is not WSL, so Windows' counters are not read.");
     const used = card.total - card.free;
@@ -137,7 +154,6 @@ export class GpuMonitor {
     if (this.processes === null) return unknown("still reading Windows' counters…");
     const uses = this.processes.uses.filter((use) => use.luid === luid);
     const shares = shareOut(uses, this.processes.names, used);
-    const split = file !== null && file.holders.length > 0 ? file.holders : null;
-    return { ...base, holders: rowsOf(shares, split), unknown: "" };
+    return { ...base, holders: rowsOf(shares, file.holders), unknown: "" };
   }
 }

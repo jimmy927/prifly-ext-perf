@@ -49,32 +49,35 @@
       </section>
 
       <section id="prifly" hidden>
-        <div class="tiles" id="tiles"></div>
-        <div class="sub subbar">
-          <span>Split by</span>
-          <fieldset class="every" id="splitby" aria-label="Split the bars by"></fieldset>
-        </div>
-        <div class="split">
-          <div class="card" id="kinds"></div>
-          <div class="card" id="mcp"></div>
-        </div>
-        <div class="sub">By session</div>
-        <div class="card">
-          <table>
-            <thead>
-              <tr>
-                <th>Session</th>
-                <th>State</th>
-                <th class="r">Processes</th>
-                <th class="r">CPU</th>
-                <th class="r">Memory</th>
-                <th class="r">Disk r / w</th>
-                <th>MCP</th>
-                <th>Doing now</th>
-              </tr>
-            </thead>
-            <tbody id="sessions"></tbody>
-          </table>
+        <p class="muted" id="prifly-absent" hidden></p>
+        <div id="prifly-body">
+          <div class="tiles" id="tiles"></div>
+          <div class="sub subbar">
+            <span>Split by</span>
+            <fieldset class="every" id="splitby" aria-label="Split the bars by"></fieldset>
+          </div>
+          <div class="split">
+            <div class="card" id="kinds"></div>
+            <div class="card" id="mcp"></div>
+          </div>
+          <div class="sub">By session</div>
+          <div class="card">
+            <table>
+              <thead>
+                <tr>
+                  <th>Session</th>
+                  <th>State</th>
+                  <th class="r">Processes</th>
+                  <th class="r">CPU</th>
+                  <th class="r">Memory</th>
+                  <th class="r">Disk r / w</th>
+                  <th>MCP</th>
+                  <th>Doing now</th>
+                </tr>
+              </thead>
+              <tbody id="sessions"></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>

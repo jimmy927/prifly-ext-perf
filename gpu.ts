@@ -12,8 +12,12 @@
  * This file is the pure part: parsing and the sums. `gpu-live.ts` reads.
  */
 
-/** Dictation's grey words need 1800 MiB on the card (prifly's `GREY_NEEDS_MIB`) and a 500 MiB spare. */
-export const GREY_NEEDS_MIB = 1800 + 500;
+/**
+ * The free memory at which prifly starts dictation's grey words (its
+ * `GREY_START_FREE_MIB`), where the host has not said: it publishes its own as
+ * `greyNeeds` in `gpu-holders.json`, which wins (`readGreyNeeds`).
+ */
+export const GREY_NEEDS_MIB = 1536;
 /** A holders file older than this is from a host that is no longer running. */
 export const HOLDERS_FRESH_MS = 10 * 60_000;
 /** Windows processes named in the table; the rest of the card is "Windows other". */
@@ -57,6 +61,18 @@ export type GpuProcesses = { uses: GpuUse[]; names: Map<number, string> };
 
 const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i;
 
+function keepLargest(into: Map<string, GpuUse>, key: string, use: GpuUse): void {
+  const seen = into.get(key);
+  if (seen === undefined || seen.mib < use.mib) into.set(key, use);
+}
+
+function instanceUse(instance: string, bytes: string): GpuUse | null {
+  const match = INSTANCE.exec(instance);
+  const mib = Number(bytes) / 2 ** 20;
+  if (match === null || !Number.isFinite(mib) || mib < 0) return null;
+  return { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
+}
+
 /**
  * `gpuProcessCounters()`'s lines. A pid listed more than once for one adapter
  * (`phys_0#2`) counts its largest, not the sum: the instances overlap. A
@@ -66,7 +82,7 @@ const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i
  */
 export function parseGpuProcesses(out: string): GpuProcesses {
   const dedicated = new Map<string, GpuUse>();
-  const committed = new Map<string, GpuUse>();
+  const committed = new Map<string, number>();
   const names = new Map<number, string>();
   for (const line of out.split(/\r?\n/)) {
     const [kind, first, second] = line.trim().split("|");
@@ -75,33 +91,20 @@ export function parseGpuProcesses(out: string): GpuProcesses {
       names.set(Number(first), second.toLowerCase());
       continue;
     }
-    const use = kind === "G" || kind === "C" ? useOf(first, second) : null;
-    if (use !== null) keepLargest(kind === "C" ? committed : dedicated, use);
+    const use = kind === "G" || kind === "C" ? instanceUse(first, second) : null;
+    if (use === null) continue;
+    const key = `${use.luid}/${use.pid}`;
+    if (kind === "C") {
+      committed.set(key, Math.max(committed.get(key) ?? 0, use.mib));
+      continue;
+    }
+    keepLargest(dedicated, key, use);
   }
-  return { uses: capped(dedicated, committed), names };
-}
-
-/** A pid's use per adapter, the largest seen: instances of one process overlap. */
-function keepLargest(into: Map<string, GpuUse>, use: GpuUse): void {
-  const key = `${use.luid}/${use.pid}`;
-  const seen = into.get(key);
-  if (seen === undefined || seen.mib < use.mib) into.set(key, use);
-}
-
-/** One counter line's instance name and byte count as a use; null where either is not one. */
-function useOf(instance: string, bytes: string): GpuUse | null {
-  const match = INSTANCE.exec(instance);
-  const mib = Number(bytes) / 2 ** 20;
-  if (match === null || !Number.isFinite(mib) || mib < 0) return null;
-  return { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
-}
-
-/** Each dedicated use, at most what its process has committed. */
-function capped(dedicated: Map<string, GpuUse>, committed: Map<string, GpuUse>): GpuUse[] {
-  return [...dedicated].map(([key, use]) => {
+  const uses = [...dedicated].map(([key, use]) => {
     const cap = committed.get(key);
-    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap.mib) };
+    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap) };
   });
+  return { uses, names };
 }
 
 export type Share = { name: string; mib: number };
@@ -142,24 +145,30 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
   return { named, vm, other: Math.max(0, used - vm - shown) };
 }
 
-export type Holder = { pid: number; which: string; label: string; model: string; mib: number };
+/** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
+export type Part = { model: string; mib: number };
 
-/** What `gpu-holders.json` says: prifly's live workers, and what grey words need when the host said. */
-export type HoldersFile = { holders: Holder[]; greyNeeds: number | null };
+export type Holder = {
+  pid: number;
+  which: string;
+  label: string;
+  model: string;
+  mib: number;
+  /** Each model's share of `mib`, where the host says; empty for a worker with one model. */
+  parts: Part[];
+};
 
 /**
- * `gpu-holders.json`, read tolerantly. Null (as if there were no file) when it
- * is not JSON, not shaped like the file, or older than ten minutes. Only
- * holders whose process is still alive are kept, so `holders` may be empty.
- * `greyNeeds` is the host's figure in MiB when it is a positive number, else
- * null. A `which` this code does not know stays a holder; an entry that is not
+ * `gpu-holders.json`, read tolerantly. Null (use the one bar) when it is not
+ * JSON, older than ten minutes, or holds nobody whose process is still alive.
+ * A `which` this code does not know stays a holder; an entry that is not
  * shaped like one is skipped, not the whole file.
  */
 export function readHolders(
   text: string,
   now: number,
   alive: (pid: number) => boolean,
-): HoldersFile | null {
+): Holder[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -167,18 +176,13 @@ export function readHolders(
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const { at, holders, greyNeeds } = parsed as {
-    at?: unknown;
-    holders?: unknown;
-    greyNeeds?: unknown;
-  };
+  const { at, holders } = parsed as { at?: unknown; holders?: unknown };
   if (typeof at !== "number" || now - at > HOLDERS_FRESH_MS || !Array.isArray(holders)) return null;
   const kept = (holders as unknown[]).flatMap((entry) => {
     const holder = holderOf(entry);
     return holder !== null && alive(holder.pid) ? [holder] : [];
   });
-  const needs = typeof greyNeeds === "number" && Number.isFinite(greyNeeds) && greyNeeds > 0;
-  return { holders: kept, greyNeeds: needs ? greyNeeds : null };
+  return kept.length > 0 ? kept : null;
 }
 
 /** Whether dictation's grey words are running, would start on the free memory, or would not. */
@@ -187,10 +191,27 @@ export type Grey = "on" | "fits" | "short";
 /**
  * "on" when a live grey worker is listed (it holds its own memory, so free
  * says nothing about it), else free memory against what the words need.
+ * `holders` is `readHolders`' answer: null for a missing or stale file, or nobody alive.
  */
-export function greyState(file: HoldersFile | null, free: number, greyNeeds: number): Grey {
-  if (file?.holders.some((h) => h.which === "grey")) return "on";
+export function greyState(holders: Holder[] | null, free: number, greyNeeds: number): Grey {
+  if (holders?.some((h) => h.which === "grey")) return "on";
   return free >= greyNeeds ? "fits" : "short";
+}
+
+/** `gpu-holders.json`'s `greyNeeds`, MiB; null where the file is not fresh or does not say. */
+export function readGreyNeeds(text: string, now: number): number | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { at, greyNeeds } = parsed as { at?: unknown; greyNeeds?: unknown };
+  if (typeof at !== "number" || now - at > HOLDERS_FRESH_MS) return null;
+  return typeof greyNeeds === "number" && Number.isFinite(greyNeeds) && greyNeeds > 0
+    ? greyNeeds
+    : null;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -203,11 +224,25 @@ function holderOf(entry: unknown): Holder | null {
     return null;
   }
   const which = str(h["which"]);
-  return { pid, which, label: str(h["label"]) || which || "prifly", model: str(h["model"]), mib };
+  const label = str(h["label"]) || which || "prifly";
+  return { pid, which, label, model: str(h["model"]), mib, parts: partsOf(h["parts"]) };
+}
+
+/** A holder's `parts`; entries not shaped like a part are left out. */
+function partsOf(value: unknown): Part[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const p = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    const { mib } = p;
+    const model = str(p["model"]);
+    return model !== "" && typeof mib === "number" && Number.isFinite(mib) && mib >= 0
+      ? [{ model, mib }]
+      : [];
+  });
 }
 
 export type GpuRow = {
-  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`. */
+  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`; a worker's later models add `g-part`. */
   kind: string;
   where: "Windows" | "prifly" | "WSL";
   name: string;
@@ -235,16 +270,21 @@ export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
       },
     ];
   }
-  const sum = holders.reduce((a, h) => a + h.mib, 0);
+  // A worker with several models is a row per model, so the expensive one shows.
+  const rows: GpuRow[] = holders.flatMap((h) => {
+    const kind = HOLDER_KIND[h.which] ?? "g-wsl";
+    const parts = h.parts.length > 0 ? h.parts : [{ model: h.model, mib: h.mib }];
+    return parts.map((part, i) => ({
+      kind: i === 0 ? kind : `${kind} g-part`,
+      where: "prifly" as const,
+      name: h.label,
+      what: part.model,
+      mib: part.mib,
+    }));
+  });
+  const sum = rows.reduce((a, r) => a + r.mib, 0);
   // The VM's figure is the card's own count: prifly's own may not exceed it.
-  const scale = sum > vm ? vm / sum : 1;
-  const rows: GpuRow[] = holders.map((h) => ({
-    kind: HOLDER_KIND[h.which] ?? "g-wsl",
-    where: "prifly",
-    name: h.label,
-    what: h.model,
-    mib: h.mib * scale,
-  }));
+  if (sum > vm) for (const row of rows) row.mib *= vm / sum;
   const rest = Math.max(0, vm - sum);
   if (rest >= 1) rows.push({ kind: "g-wsl", where: "WSL", name: "WSL other", what: "", mib: rest });
   return rows;

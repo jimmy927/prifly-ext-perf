@@ -63,8 +63,8 @@ process that belongs to a prifly session is named with that session.
 With an NVIDIA card (`nvidia-smi` on the PATH, or in `/usr/lib/wsl/lib`), a
 full-width **Graphics card** card sits under WSL and Windows: free memory of
 the total, whether dictation's grey words are on, would start or would not
-(starting needs 2.2 GB free: 1800 MiB plus 500 spare, or the `greyNeeds` the
-host writes in `gpu-holders.json`; the dashed line on the bar), and who holds
+(starting needs 1.5 GB free, or the `greyNeeds` the host writes in
+`gpu-holders.json`; the dashed line on the bar), and who holds
 the rest. Prifly's holders file decides first: while it lists a live grey
 worker the words are **on**, whatever is free (the worker holds its own
 memory); otherwise they **would start** when free memory reaches what they
@@ -75,7 +75,9 @@ memory or disk is really short. Windows' per-process counters (`GPU Process Memo
 count each process at most what it has committed (NVIDIA Overlay has claimed
 34.9 GB dedicated on an 8 GB card), overlap, and so are scaled down to fit in
 what the WSL VM leaves; `vmwp`, taken as counted, is the WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
-(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. Read only
+(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. A worker
+whose entry carries `parts` (`[{model, mib}]`, such as Parakeet and turbo in
+dictation's final worker) is a row per model, the second one lighter. Read only
 while the window is open.
 
 ### When it turns orange or red
@@ -179,8 +181,9 @@ you are.
   kernel, so Docker Desktop's containers count in these totals. They run in a
   distro of their own, though, so they never appear in the process list.
 - **Windows**: one `typeperf.exe` that stays running and prints its counters
-  every second, the last hour kept; if it ends, it is started again. A PowerShell call reads the
-  machine's name, cores and memory once.
+  every second, the last hour kept; if it ends, it is started again. One `powershell.exe` is started on first
+  use and stays running (no console flashing up); it reads the machine's name, cores and
+  memory once and answers the calls below.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
   while the window is open (it asks every second; 10 s without, and it counts as closed), the last five
   minutes kept. With the window closed they are read every 5 s, and only while
@@ -192,11 +195,31 @@ you are.
   package or script each one runs. `npx -y @playwright/mcp` runs as `npm exec
   @playwright/mcp`, so the launcher alone tells nothing. A process that looks
   like an MCP server but is in no config read here shows as *unlisted*.
-- **Windows' busiest processes** (PowerShell, every 10 s) and **cloud
+- **Windows' busiest processes** (the shared PowerShell, every 10 s) and **cloud
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 
-Outside WSL there is no Windows to read: the window shows Linux alone.
+On a Linux with no Windows around it there is no Windows to read: the window
+shows Linux alone.
+
+## When prifly runs on Windows itself
+
+A prifly host that runs natively on Windows (not inside WSL) reads Windows the
+same way, with `typeperf.exe` and `powershell.exe` from `%SystemRoot%\System32`.
+WSL's figures come from one `wsl.exe -e sh` that stays running: once a second
+it is sent the same one-line command, a `tail` of the `/proc` files above, and
+its output goes through the same parsers. It is started only while
+`wsl.exe --list --running` names a distro (asked once a minute while it names
+none), so the extension never boots the WSL VM; once started, though, it keeps
+the VM from shutting down while idle. When it ends (`wsl --shutdown`, say) or a
+read fails or takes over 10 s, WSL counts as gone: the hour of WSL history kept
+so far is dropped, as it says nothing about now, and `wsl.exe` is asked again a
+minute later. With no WSL running, the WSL card says why and the window shows
+Windows alone.
+
+Such a host reads no process table and no Docker containers: the prifly tab
+says so, the nanny names no sessions, and **What uses the CPU now** lists
+Windows' processes only.
 
 ## Install
 
