@@ -173,8 +173,9 @@ you are.
   kernel, so Docker Desktop's containers count in these totals. They run in a
   distro of their own, though, so they never appear in the process list.
 - **Windows**: one `typeperf.exe` that stays running and prints its counters
-  every second, the last hour kept; if it ends, it is started again. A PowerShell call reads the
-  machine's name, cores and memory once.
+  every second, the last hour kept; if it ends, it is started again. One `powershell.exe` is started on first
+  use and stays running (no console flashing up); it reads the machine's name, cores and
+  memory once and answers the calls below.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
   while the window is open (it asks every second; 10 s without, and it counts as closed), the last five
   minutes kept. With the window closed they are read every 5 s, and only while
@@ -186,7 +187,7 @@ you are.
   package or script each one runs. `npx -y @playwright/mcp` runs as `npm exec
   @playwright/mcp`, so the launcher alone tells nothing. A process that looks
   like an MCP server but is in no config read here shows as *unlisted*.
-- **Windows' busiest processes** (PowerShell, every 10 s) and **cloud
+- **Windows' busiest processes** (the shared PowerShell, every 10 s) and **cloud
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 

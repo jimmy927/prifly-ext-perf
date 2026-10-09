@@ -49,6 +49,7 @@ import {
 } from "./verdict";
 import {
   machineBusy,
+  stopPowershell,
   topProcesses,
   type WindowsCounters,
   type WindowsInfo,
@@ -402,6 +403,7 @@ export function activate(api: ExtensionApi): () => void {
   return () => {
     clearInterval(timer);
     windows?.stop();
+    stopPowershell();
     state = null;
   };
 }
