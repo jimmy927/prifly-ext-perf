@@ -271,6 +271,10 @@ describe("splitting the WSL share", () => {
     ]);
   });
 
+  test("an empty holders list keeps the VM's share as one WSL other row", () => {
+    expect(vmRows(900, [], []).map((r) => [r.name, r.mib])).toEqual([["WSL other", 900]]);
+  });
+
   test("without holders it is one bar, and nothing without a VM share", () => {
     expect(vmRows(900, null).map((r) => r.name)).toEqual(["prifly (WSL)"]);
     expect(vmRows(900, null)[0]?.what).toBe(

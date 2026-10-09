@@ -79,9 +79,10 @@ function alive(pid: number): boolean {
  * The WSL processes that have `/dev/dxg` open, found by the symlinks in
  * `/proc/<pid>/fd`; null where there is no `/proc` to look in. Processes that
  * vanish or are not ours to look into are skipped. Only this distro's
- * processes are seen: those inside Docker Desktop's own distro are not in its
- * `/proc`, so a container using the GPU is not named, only left in the
- * VM's remainder.
+ * processes are seen: those in other distros, Docker Desktop's included, are
+ * not in its `/proc`, though their GPU memory is in the VM's figure. With no
+ * local process but prifly's workers to show for it, it is counted into the
+ * workers.
  */
 export async function scanDxg(proc = "/proc"): Promise<DxgProcess[] | null> {
   if (HOST.native) return null;
@@ -125,6 +126,7 @@ export class GpuMonitor {
   private processesFailed = false;
   private dxg: DxgProcess[] | null = null;
   private dxgAt = 0;
+  private scanning = false;
   private readonly scan: () => Promise<DxgProcess[] | null>;
   private readonly holdersPath: string;
   private readonly log: (
@@ -151,16 +153,21 @@ export class GpuMonitor {
         this.probed = true;
       });
     }
-    if (this.card !== null && now - this.dxgAt > PROCESSES_EVERY) {
+    if (this.card !== null && !this.scanning && now - this.dxgAt > PROCESSES_EVERY) {
       this.dxgAt = now;
-      void this.scan().then(
-        (found) => {
-          this.dxg = found;
-        },
-        () => {
-          this.dxg = null;
-        },
-      );
+      this.scanning = true;
+      void this.scan()
+        .then(
+          (found) => {
+            this.dxg = found;
+          },
+          () => {
+            this.dxg = null;
+          },
+        )
+        .finally(() => {
+          this.scanning = false;
+        });
     }
     if (windows === null || this.card === null || now - this.processesAt <= PROCESSES_EVERY) return;
     this.processesAt = now;

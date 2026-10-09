@@ -75,9 +75,10 @@ GPU) open: when only prifly's workers do, they share the whole of the VM's
 figure and there is no "WSL other" row; when another process does, the
 remainder is named after it (`python3 (pid 123)`, or "WSL other" with the list
 under Why when there are more than three). Where `/proc` cannot be scanned
-the remainder stays "WSL other". Processes inside Docker Desktop's own distro
-are not visible from this one, so they are not named. Read only while the
-window is open.
+the remainder stays "WSL other". Only this distro's processes are visible:
+GPU use in another distro or in Docker Desktop's own is part of the VM's
+figure but cannot be named, so while no local process but prifly's workers has
+the GPU open it is counted into them. Read only while the window is open.
 
 ### When it turns orange or red
 

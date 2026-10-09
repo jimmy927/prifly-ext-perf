@@ -235,7 +235,7 @@ export function vmRows(
   const listed = new Set(holders.map((h) => h.pid));
   const others = dxg === null ? [] : dxg.filter((p) => !listed.has(p.pid));
   // Only prifly's workers have the GPU open: the card's count for the VM is all theirs.
-  const onlyHolders = dxg !== null && others.length === 0;
+  const onlyHolders = holders.length > 0 && dxg !== null && others.length === 0;
   // The VM's figure is the card's own count: prifly's own may not exceed it.
   const scale = onlyHolders && sum > 0 ? vm / sum : sum > vm ? vm / sum : 1;
   const rows: GpuRow[] = holders.map((h) => ({
