@@ -225,6 +225,52 @@ describe("splitting the WSL share", () => {
     expect(rows.some((r) => r.name === "WSL other")).toBe(false);
   });
 
+  test("when only the holders have the GPU open they take the whole VM share, with no WSL other", () => {
+    const rows = vmRows(3820, [holder(1, "final", 2600)], [{ pid: 1, name: "python3" }]);
+    expect(rows.map((r) => [r.where, r.name])).toEqual([["prifly", "final"]]);
+    expect(rows[0]?.mib).toBeCloseTo(3820, 6);
+    const two = vmRows(
+      3000,
+      [holder(1, "final", 1000), holder(2, "grey", 500)],
+      [
+        { pid: 1, name: "python3" },
+        { pid: 2, name: "python3" },
+      ],
+    );
+    expect(two.reduce((a, r) => a + r.mib, 0)).toBeCloseTo(3000, 6);
+    expect(two[0]?.mib).toBeCloseTo(2000, 6);
+  });
+
+  test("another process with the GPU open names the remainder", () => {
+    const dxg = [
+      { pid: 1, name: "python3" },
+      { pid: 77, name: "ollama" },
+    ];
+    const rows = vmRows(3820, [holder(1, "final", 2600)], dxg);
+    expect(rows.map((r) => [r.where, r.name, r.what, r.mib])).toEqual([
+      ["prifly", "final", "m", 2600],
+      ["WSL", "ollama (pid 77)", "", 1220],
+    ]);
+  });
+
+  test("more than three other processes are WSL other, listed under Why", () => {
+    const dxg = [1, 2, 3, 4].map((pid) => ({ pid: 100 + pid, name: "p" }));
+    const rows = vmRows(3000, [holder(1, "final", 1000)], dxg);
+    expect(rows[1]).toMatchObject({
+      name: "WSL other",
+      what: "p (pid 101), p (pid 102), p (pid 103), p (pid 104)",
+      mib: 2000,
+    });
+  });
+
+  test("where the GPU users could not be scanned the remainder stays WSL other", () => {
+    const rows = vmRows(3820, [holder(1, "final", 2600)], null);
+    expect(rows.map((r) => [r.name, r.mib])).toEqual([
+      ["final", 2600],
+      ["WSL other", 1220],
+    ]);
+  });
+
   test("without holders it is one bar, and nothing without a VM share", () => {
     expect(vmRows(900, null).map((r) => r.name)).toEqual(["prifly (WSL)"]);
     expect(vmRows(900, null)[0]?.what).toBe(

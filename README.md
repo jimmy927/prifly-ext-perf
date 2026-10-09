@@ -69,8 +69,15 @@ disk is really short. Windows' per-process counters (`GPU Process Memory`)
 count each process at most what it has committed (NVIDIA Overlay has claimed
 34.9 GB dedicated on an 8 GB card), overlap, and so are scaled down to fit in
 what the WSL VM leaves; `vmwp`, taken as counted, is the WSL VM, split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
-(fresh, live pids only) and "WSL other", else one "prifly (WSL)" bar. Read only
-while the window is open.
+(fresh, live pids only), else one "prifly (WSL)" bar. The workers' figures are
+estimates, so the card also looks at which WSL processes have `/dev/dxg` (the
+GPU) open: when only prifly's workers do, they share the whole of the VM's
+figure and there is no "WSL other" row; when another process does, the
+remainder is named after it (`python3 (pid 123)`, or "WSL other" with the list
+under Why when there are more than three). Where `/proc` cannot be scanned
+the remainder stays "WSL other". Processes inside Docker Desktop's own distro
+are not visible from this one, so they are not named. Read only while the
+window is open.
 
 ### When it turns orange or red
 

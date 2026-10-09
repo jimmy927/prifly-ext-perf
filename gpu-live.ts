@@ -6,10 +6,12 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { readdir, readFile, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type Card,
+  type DxgProcess,
   type GpuProcesses,
   type GpuRow,
   GREY_NEEDS_MIB,
@@ -73,6 +75,39 @@ function alive(pid: number): boolean {
   }
 }
 
+/**
+ * The WSL processes that have `/dev/dxg` open, found by the symlinks in
+ * `/proc/<pid>/fd`; null where there is no `/proc` to look in. Processes that
+ * vanish or are not ours to look into are skipped. Only this distro's
+ * processes are seen: those inside Docker Desktop's own distro are not in its
+ * `/proc`, so a container using the GPU is not named, only left in the
+ * VM's remainder.
+ */
+export async function scanDxg(proc = "/proc"): Promise<DxgProcess[] | null> {
+  if (HOST.native) return null;
+  let pids: string[];
+  try {
+    pids = (await readdir(proc)).filter((entry) => /^\d+$/.test(entry));
+  } catch {
+    return null;
+  }
+  const found = await Promise.all(
+    pids.map(async (pid): Promise<DxgProcess | null> => {
+      try {
+        for (const fd of await readdir(`${proc}/${pid}/fd`)) {
+          if ((await readlink(`${proc}/${pid}/fd/${fd}`).catch(() => "")) !== "/dev/dxg") continue;
+          const name = (await readFile(`${proc}/${pid}/comm`, "utf8").catch(() => "")).trim();
+          return { pid: Number(pid), name: name || "process" };
+        }
+      } catch {
+        // Gone, or not ours to look into.
+      }
+      return null;
+    }),
+  );
+  return found.flatMap((p) => (p === null ? [] : [p]));
+}
+
 function holdersFile(path: string) {
   try {
     return readHolders(readFileSync(path, "utf8"), Date.now(), alive);
@@ -88,6 +123,9 @@ export class GpuMonitor {
   private processes: (GpuProcesses & { at: number }) | null = null;
   private processesAt = 0;
   private processesFailed = false;
+  private dxg: DxgProcess[] | null = null;
+  private dxgAt = 0;
+  private readonly scan: () => Promise<DxgProcess[] | null>;
   private readonly holdersPath: string;
   private readonly log: (
     event: string,
@@ -97,8 +135,10 @@ export class GpuMonitor {
   constructor(
     log: (event: string, data: Record<string, string | number | boolean | null>) => void,
     holdersPath = HOLDERS_FILE,
+    scan: () => Promise<DxgProcess[] | null> = scanDxg,
   ) {
     this.log = log;
+    this.scan = scan;
     this.holdersPath = holdersPath;
   }
 
@@ -110,6 +150,17 @@ export class GpuMonitor {
         this.card = card;
         this.probed = true;
       });
+    }
+    if (this.card !== null && now - this.dxgAt > PROCESSES_EVERY) {
+      this.dxgAt = now;
+      void this.scan().then(
+        (found) => {
+          this.dxg = found;
+        },
+        () => {
+          this.dxg = null;
+        },
+      );
     }
     if (windows === null || this.card === null || now - this.processesAt <= PROCESSES_EVERY) return;
     this.processesAt = now;
@@ -139,6 +190,10 @@ export class GpuMonitor {
     if (this.processes === null) return unknown("still reading Windows' counters…");
     const uses = this.processes.uses.filter((use) => use.luid === luid);
     const shares = shareOut(uses, this.processes.names, used);
-    return { ...base, holders: rowsOf(shares, holdersFile(this.holdersPath)), unknown: "" };
+    return {
+      ...base,
+      holders: rowsOf(shares, holdersFile(this.holdersPath), this.dxg),
+      unknown: "",
+    };
   }
 }

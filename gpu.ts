@@ -7,7 +7,9 @@
  * - Windows' counters (`windows.ts`) know each Windows process's share of the
  *   card, among them `vmwp`, the WSL VM, which holds everything WSL runs on it.
  * - prifly's host publishes what each of its GPU model workers holds
- *   (`gpu-holders.json`), which splits the VM's share.
+ *   (`gpu-holders.json`), which splits the VM's share. Those are estimates, so
+ *   which WSL processes have `/dev/dxg` open (`gpu-live.ts` scans `/proc`)
+ *   says whether anything else can hold part of it.
  *
  * This file is the pure part: parsing and the sums. `gpu-live.ts` reads.
  */
@@ -198,8 +200,25 @@ const HOLDER_KIND: Record<string, string> = {
   intent: "g-intent",
 };
 
-/** The VM's share as rows: prifly's workers and what else WSL holds, or one bar when the host did not say. */
-export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
+/** A WSL process that has `/dev/dxg`, the GPU, open: its pid and short name (`/proc/<pid>/comm`). */
+export type DxgProcess = { pid: number; name: string };
+
+/** More other GPU processes than this are listed in the Why, not in the name. */
+const NAMED_OTHERS = 3;
+
+/**
+ * The VM's share as rows: prifly's workers and what else WSL holds, or one bar
+ * when the host did not say. The holders' figures are estimates, so `dxg`, the
+ * WSL processes that have the GPU open, says whether anything but them can
+ * hold the rest: when none does, the holders take the whole share; when others
+ * do, the remainder is named after them. Null `dxg` (no `/proc` to look in)
+ * leaves the remainder as "WSL other".
+ */
+export function vmRows(
+  vm: number,
+  holders: Holder[] | null,
+  dxg: DxgProcess[] | null = null,
+): GpuRow[] {
   if (vm < 1) return [];
   if (holders === null) {
     return [
@@ -213,17 +232,29 @@ export function vmRows(vm: number, holders: Holder[] | null): GpuRow[] {
     ];
   }
   const sum = holders.reduce((a, h) => a + h.mib, 0);
+  const listed = new Set(holders.map((h) => h.pid));
+  const others = dxg === null ? [] : dxg.filter((p) => !listed.has(p.pid));
+  // Only prifly's workers have the GPU open: the card's count for the VM is all theirs.
+  const onlyHolders = dxg !== null && others.length === 0;
   // The VM's figure is the card's own count: prifly's own may not exceed it.
-  const scale = sum > vm ? vm / sum : 1;
+  const scale = onlyHolders && sum > 0 ? vm / sum : sum > vm ? vm / sum : 1;
   const rows: GpuRow[] = holders.map((h) => ({
     kind: HOLDER_KIND[h.which] ?? "g-wsl",
     where: "prifly",
     name: h.label,
     what: h.model,
-    mib: h.mib * scale,
+    mib: onlyHolders && sum <= 0 ? vm / holders.length : h.mib * scale,
   }));
   const rest = Math.max(0, vm - sum);
-  if (rest >= 1) rows.push({ kind: "g-wsl", where: "WSL", name: "WSL other", what: "", mib: rest });
+  if (onlyHolders || rest < 1) return rows;
+  const names = others.map((p) => `${p.name} (pid ${p.pid})`);
+  rows.push({
+    kind: "g-wsl",
+    where: "WSL",
+    name: others.length > 0 && others.length <= NAMED_OTHERS ? names.join(", ") : "WSL other",
+    what: others.length > NAMED_OTHERS ? names.join(", ") : "",
+    mib: rest,
+  });
   return rows;
 }
 
@@ -252,7 +283,11 @@ export function knownWindows(process: string): Known {
 }
 
 /** The card as the table lists it: prifly and WSL first, then Windows, biggest first. */
-export function rowsOf(shares: Shares, holders: Holder[] | null): GpuRow[] {
+export function rowsOf(
+  shares: Shares,
+  holders: Holder[] | null,
+  dxg: DxgProcess[] | null = null,
+): GpuRow[] {
   const windows: GpuRow[] = shares.named.map((share, i) => {
     const known = knownWindows(share.name);
     return {
@@ -272,5 +307,5 @@ export function rowsOf(shares: Shares, holders: Holder[] | null): GpuRow[] {
       mib: shares.other,
     });
   }
-  return [...vmRows(shares.vm, holders), ...windows];
+  return [...vmRows(shares.vm, holders, dxg), ...windows];
 }
