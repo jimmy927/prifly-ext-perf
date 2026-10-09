@@ -270,6 +270,27 @@ describe("WslLinux", () => {
     expect(children).toHaveLength(2);
   });
 
+  test("a shell that dies between reads is not respawned", async () => {
+    const { wsl, children, reads, probes } = setup(["", ""]);
+    wsl.poll();
+    await settle();
+    wsl.poll();
+    children[0]?.answer(BLOB);
+    await settle();
+    expect(reads).toHaveLength(1);
+    // `wsl --shutdown` while no read is in flight.
+    children[0]?.end("exit 1: The Windows Subsystem for Linux instance has terminated.");
+    await settle();
+    expect(wsl.absent).toBe(
+      "WSL: shell ended: exit 1: The Windows Subsystem for Linux instance has terminated.",
+    );
+    wsl.poll();
+    await settle();
+    // No new wsl.exe, which would boot the VM again, and no probe before the minute is up.
+    expect(children).toHaveLength(1);
+    expect(probes()).toBe(1);
+  });
+
   test("output that is no read is a failure, not a sample", async () => {
     const { wsl, children, reads } = setup([""]);
     wsl.poll();

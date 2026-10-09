@@ -92,14 +92,16 @@ export function probeWsl(): Promise<string> {
   });
 }
 
-/** The shell's side of one `wsl.exe -e sh`; its last stderr goes into the reason it ended. */
+/** The shell's side of one `wsl.exe -e sh`; the start of its stderr goes into the reason it ended. */
 function shellChild(child: ChildProcess): ShellChild {
   child.stdout?.setEncoding("utf8");
   // A write to a child that has ended must not crash the extension.
   child.stdin?.on("error", () => {});
-  let stderr = "";
+  // Bytes, decoded once at the end: a UTF-16 character may be cut between chunks.
+  let stderrBytes = Buffer.alloc(0);
   child.stderr?.on("data", (chunk: Buffer) => {
-    stderr = decodeWsl(`${stderr}${chunk.toString()}`).slice(-300);
+    if (stderrBytes.length < 600)
+      stderrBytes = Buffer.concat([stderrBytes, chunk]).subarray(0, 600);
   });
   return {
     write: (text) => {
@@ -113,9 +115,10 @@ function shellChild(child: ChildProcess): ShellChild {
     },
     onExit: (listener) => {
       child.on("error", (error) => listener(error.message));
-      child.on("exit", (code, signal) =>
-        listener(`exit ${code ?? signal}${stderr === "" ? "" : `: ${stderr}`}`),
-      );
+      child.on("exit", (code, signal) => {
+        const stderr = decodeWsl(stderrBytes);
+        listener(`exit ${code ?? signal}${stderr === "" ? "" : `: ${stderr}`}`);
+      });
     },
   };
 }
@@ -164,7 +167,7 @@ export class WslLinux {
         .probe()
         .then((why) => {
           if (why !== "") this.gone(why);
-          else if (!this.stopped) this.shell = new ScriptShell(this.deps.spawn, SH_FRAME);
+          else if (!this.stopped) this.shell = this.newShell();
         })
         .catch((error: unknown) => this.gone(`WSL: ${String(error)}`))
         .finally(() => {
@@ -181,12 +184,34 @@ export class WslLinux {
         this.absent = "";
         this.deps.onRead(raw);
       })
-      .catch((error: unknown) =>
-        this.gone(`WSL: ${error instanceof Error ? error.message : String(error)}`),
-      )
+      .catch((error: unknown) => {
+        // Already gone (the shell ended, or `stop`): the first reason stands.
+        if (this.shell !== shell) return;
+        this.gone(`WSL: ${error instanceof Error ? error.message : String(error)}`);
+      })
       .finally(() => {
         this.busy = false;
       });
+  }
+
+  /**
+   * A shell that starts one `wsl.exe` and never another: `ScriptShell` would
+   * start a new one on the next read after the old one ended, and that would
+   * boot a VM that `wsl --shutdown` just stopped. Its end, between reads or
+   * during one, is WSL gone, asked about again in a minute.
+   */
+  private newShell(): ScriptShell {
+    let started = false;
+    const shell = new ScriptShell(() => {
+      if (started) throw new Error("the shell ended; WSL is asked about again first");
+      started = true;
+      const child = this.deps.spawn();
+      child.onExit((reason) => {
+        if (this.shell === shell) this.gone(`WSL: shell ended: ${reason}`);
+      });
+      return child;
+    }, SH_FRAME);
+    return shell;
   }
 
   stop(): void {

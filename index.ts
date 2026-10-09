@@ -21,6 +21,7 @@
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import {
+  type Container,
   type ContainerInfo,
   type ContainerSnapshot,
   containerInfos,
@@ -33,8 +34,8 @@ import { HOST } from "./host";
 import { McpConfig } from "./mcp";
 import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
 import { ownerIdsOf, priflyReport, type ToolUse, toolUseOf, topLinux } from "./prifly";
-import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
-import { type ProcSnapshot, readProcs } from "./procs";
+import type { Decoration, ExtensionApi, ExtensionSession, PanelRequest } from "./prifly-api";
+import { type Proc, type ProcSnapshot, readProcs } from "./procs";
 import { HOUR, keep } from "./ring";
 import {
   headline,
@@ -422,6 +423,20 @@ function linuxStatus(current: State, sample: LinuxSample | null) {
   return { linux, linuxAbsent: "" };
 }
 
+/**
+ * prifly's processes, or null where the table is not read (yet, or on a host
+ * on Windows): the page draws the prifly tab, and its WSL tiles, only from one.
+ */
+function reportOf(
+  current: State,
+  table: Proc[] | null,
+  sessions: ExtensionSession[],
+  containers: Container[],
+) {
+  if (table === null || !current.procsHere) return null;
+  return priflyReport(table, process.pid, sessions, new McpConfig(), containers);
+}
+
 /** Everything the page shows, each number averaged over the last `seconds`. */
 function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
@@ -435,8 +450,7 @@ function status(current: State, seconds: number) {
   const containers = averageContainers(current.containers, seconds, current.dockerInfos, (info) =>
     ownerOf(info, sessions),
   );
-  const report =
-    procs === null ? null : priflyReport(table, process.pid, sessions, new McpConfig(), containers);
+  const report = reportOf(current, procs?.value ?? null, sessions, containers);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.free < gpu.greyNeeds;
   return {
