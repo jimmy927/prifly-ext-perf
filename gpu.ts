@@ -63,9 +63,17 @@ export type GpuProcesses = { uses: GpuUse[]; names: Map<number, string> };
 
 const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i;
 
-function keepLargest(into: Map<string, GpuUse>, key: string, use: GpuUse): void {
-  const seen = into.get(key);
-  if (seen === undefined || seen.mib < use.mib) into.set(key, use);
+/** One pid's instances on one adapter, as `G` (dedicated) and `C` (committed) figures. */
+type Instances = { luid: string; pid: number; dedicated: number[]; committed: number[] };
+
+function addInstance(into: Map<string, Instances>, use: GpuUse, kind: "G" | "C"): void {
+  const key = `${use.luid}/${use.pid}`;
+  let seen = into.get(key);
+  if (seen === undefined) {
+    seen = { luid: use.luid, pid: use.pid, dedicated: [], committed: [] };
+    into.set(key, seen);
+  }
+  (kind === "G" ? seen.dedicated : seen.committed).push(use.mib);
 }
 
 function instanceUse(instance: string, bytes: string): GpuUse | null {
@@ -75,16 +83,33 @@ function instanceUse(instance: string, bytes: string): GpuUse | null {
   return { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
 }
 
+/** The instances' figure: the WSL VM's add up, every other process's overlap and count the largest. */
+function combine(figures: number[], sum: boolean): number | undefined {
+  if (figures.length === 0) return undefined;
+  return sum ? figures.reduce((a, b) => a + b, 0) : Math.max(...figures);
+}
+
+function reduceInstances(one: Instances, names: Map<number, string>): GpuUse[] {
+  // Names come in any order, so the VM is told apart only once all lines are read.
+  const sum = names.get(one.pid) === WSL_VM;
+  const mib = combine(one.dedicated, sum);
+  if (mib === undefined) return [];
+  const cap = combine(one.committed, sum);
+  return [{ pid: one.pid, luid: one.luid, mib: cap === undefined ? mib : Math.min(mib, cap) }];
+}
+
 /**
  * `gpuProcessCounters()`'s lines. A pid listed more than once for one adapter
- * (`phys_0#2`) counts its largest, not the sum: the instances overlap. A
- * process counts at most what it has committed: some report a dedicated usage
- * far past the card (NVIDIA Overlay 34.9 GB on an 8 GB card, 86 MB committed),
- * which would otherwise take most of the card's shares.
+ * (`phys_0#2`) counts its largest, not the sum: the instances overlap. The WSL
+ * VM (`vmwp`) is the exception: it has one instance per WSL process using the
+ * GPU, so its instances add up (3,820 and 1,598 MiB with dictation's final and
+ * grey workers running: 5.4 GB). A process counts at most what it has
+ * committed: some report a dedicated usage far past the card (NVIDIA Overlay
+ * 34.9 GB on an 8 GB card, 86 MB committed), which would otherwise take most
+ * of the card's shares.
  */
 export function parseGpuProcesses(out: string): GpuProcesses {
-  const dedicated = new Map<string, GpuUse>();
-  const committed = new Map<string, number>();
+  const instances = new Map<string, Instances>();
   const names = new Map<number, string>();
   for (const line of out.split(/\r?\n/)) {
     const [kind, first, second] = line.trim().split("|");
@@ -94,18 +119,9 @@ export function parseGpuProcesses(out: string): GpuProcesses {
       continue;
     }
     const use = kind === "G" || kind === "C" ? instanceUse(first, second) : null;
-    if (use === null) continue;
-    const key = `${use.luid}/${use.pid}`;
-    if (kind === "C") {
-      committed.set(key, Math.max(committed.get(key) ?? 0, use.mib));
-      continue;
-    }
-    keepLargest(dedicated, key, use);
+    if (use !== null) addInstance(instances, use, kind as "G" | "C");
   }
-  const uses = [...dedicated].map(([key, use]) => {
-    const cap = committed.get(key);
-    return cap === undefined ? use : { ...use, mib: Math.min(use.mib, cap) };
-  });
+  const uses = [...instances.values()].flatMap((one) => reduceInstances(one, names));
   return { uses, names };
 }
 
