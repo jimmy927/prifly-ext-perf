@@ -15,9 +15,12 @@ import {
   type GpuProcesses,
   type GpuRow,
   GREY_NEEDS_MIB,
+  type Grey,
+  greyState,
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
+  readGreyNeeds,
   readHolders,
   rowsOf,
   shareOut,
@@ -41,6 +44,8 @@ export type GpuStatus =
       total: number;
       free: number;
       greyNeeds: number;
+      /** Grey words running, or whether they would start: the holders file first, else free memory. */
+      grey: Grey;
       holders: GpuRow[];
       /** Why who holds the card is not known; empty when it is. */
       unknown: string;
@@ -109,12 +114,19 @@ export async function scanDxg(proc = "/proc"): Promise<DxgProcess[] | null> {
   return found.flatMap((p) => (p === null ? [] : [p]));
 }
 
+/** The holders file's say: who holds the card, and the free memory grey words start at. */
 function holdersFile(path: string) {
+  let text: string;
   try {
-    return readHolders(readFileSync(path, "utf8"), Date.now(), alive);
+    text = readFileSync(path, "utf8");
   } catch {
-    return null;
+    return { holders: null, greyNeeds: GREY_NEEDS_MIB };
   }
+  const now = Date.now();
+  return {
+    holders: readHolders(text, now, alive),
+    greyNeeds: readGreyNeeds(text, now) ?? GREY_NEEDS_MIB,
+  };
 }
 
 export class GpuMonitor {
@@ -187,7 +199,10 @@ export class GpuMonitor {
     if (!this.probed) return { loading: true };
     const card = this.card;
     if (card === null) return null;
-    const base = { loading: false as const, ...card, greyNeeds: GREY_NEEDS_MIB };
+    // The file does not depend on Windows' counters: grey is known without them.
+    const file = holdersFile(this.holdersPath);
+    const grey = greyState(file.holders, card.free, file.greyNeeds);
+    const base = { loading: false as const, ...card, greyNeeds: file.greyNeeds, grey };
     const unknown = (why: string): GpuStatus => ({ ...base, holders: [], unknown: why });
     if (windows === null) return unknown("this is not WSL, so Windows' counters are not read.");
     const used = card.total - card.free;
@@ -197,10 +212,6 @@ export class GpuMonitor {
     if (this.processes === null) return unknown("still reading Windows' counters…");
     const uses = this.processes.uses.filter((use) => use.luid === luid);
     const shares = shareOut(uses, this.processes.names, used);
-    return {
-      ...base,
-      holders: rowsOf(shares, holdersFile(this.holdersPath), this.dxg),
-      unknown: "",
-    };
+    return { ...base, holders: rowsOf(shares, file.holders, this.dxg), unknown: "" };
   }
 }

@@ -1,4 +1,4 @@
-// The bars card on the prifly tab: Memory, CPU and Processes, each stacked
+// The bars card on the prifly tab: Memory and CPU, each stacked
 // by what uses them, split either by kind or by session (the switch above it).
 
 import { $, bytes, el } from "./format.js";
@@ -34,33 +34,28 @@ function segment(key, name, value, whole, format) {
 
 /**
  * One bar: `field` of every part of prifly (its kinds, or its sessions),
- * stacked in proportion. With `machine` — what
- * WSL uses in all, and the parts of it outside prifly that can be named — the
- * bar is the whole of WSL, so prifly's share of it shows; what no one can be
- * named for is "Other programs", and the free part is the empty track.
+ * stacked in proportion across the whole of WSL (`machine`: what WSL uses in
+ * all, and the parts of it outside prifly that can be named), so prifly's
+ * share of it shows; what no one can be named for is "Other programs", and the
+ * free part is the empty track.
  */
 function stack(parts, label, field, format, machine) {
   const prifly = parts.reduce((total, part) => total + part.use[field], 0);
-  const whole = machine === undefined ? prifly : machine.total;
+  const whole = machine.total;
   const segments = parts.map((part) =>
     segment(part.key, part.name, part.use[field], whole, format),
   );
-  if (machine !== undefined) {
-    let named = prifly;
-    for (const [key, name, value] of machine.outside) {
-      // Capped at what WSL uses: counters read a moment apart can sum a little past it.
-      const shown = Math.min(value, Math.max(0, machine.used - named));
-      named += shown;
-      segments.push(segment(key, name, shown, whole, format));
-    }
-    segments.push(
-      segment("other", "Other programs", Math.max(0, machine.used - named), whole, format),
-    );
+  let named = prifly;
+  for (const [key, name, value] of machine.outside) {
+    // Capped at what WSL uses: counters read a moment apart can sum a little past it.
+    const shown = Math.min(value, Math.max(0, machine.used - named));
+    named += shown;
+    segments.push(segment(key, name, shown, whole, format));
   }
-  const total =
-    machine === undefined
-      ? format(prifly)
-      : `prifly ${format(prifly)} · free ${format(Math.max(0, machine.total - Math.max(machine.used, prifly)))} of ${format(machine.total)}`;
+  segments.push(
+    segment("other", "Other programs", Math.max(0, machine.used - named), whole, format),
+  );
+  const total = `prifly ${format(prifly)} · free ${format(Math.max(0, machine.total - Math.max(machine.used, prifly)))} of ${format(machine.total)}`;
   return el(
     "div",
     { class: "stackrow" },
@@ -271,7 +266,6 @@ export function drawKinds(report, state) {
   $("kinds").replaceChildren(
     stack(parts, "Memory", "rss", bytes, memory),
     stack(parts, "CPU", "cpu", (n) => `${n.toFixed(1)} cores`, cpu),
-    stack(parts, "Processes", "processes", String),
     legend,
   );
 }

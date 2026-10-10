@@ -81,7 +81,7 @@ export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts
 }
 
 /**
- * Adds that dictation's grey words are off (the graphics card is short of
+ * Adds that dictation's grey words would not start (the graphics card is short of
  * memory) to a headline that has nothing else to say. A real shortage of CPU,
  * memory or disk wins: it stays the headline, and its colour.
  */
@@ -90,7 +90,7 @@ export function withGreyWords<H extends { tone: Tone; text: string }>(h: H, grey
   return {
     ...h,
     tone: "warning",
-    text: "Grey words are off: the graphics card is short of memory.",
+    text: "Grey words would not start: the graphics card is short of memory.",
   };
 }
 

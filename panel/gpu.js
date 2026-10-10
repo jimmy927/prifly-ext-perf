@@ -52,13 +52,14 @@ function header(detail) {
 }
 
 function metric(gpu) {
-  const short = gpu.free < gpu.greyNeeds;
-  const verdict = short
-    ? `Grey words off: ${mib(gpu.greyNeeds - gpu.free)} short of the ${mib(gpu.greyNeeds)} they need`
-    : "Grey words fit";
+  const verdict = {
+    on: "Grey words on",
+    fits: "Grey words would start",
+    short: `Grey words would not start: ${mib(gpu.greyNeeds - gpu.free)} short of ${mib(gpu.greyNeeds)}`,
+  }[gpu.grey];
   return el(
     "div",
-    { class: `metric ${short ? "warning" : "good"}` },
+    { class: `metric ${gpu.grey === "short" ? "warning" : "good"}` },
     el("span", { class: "dot" }),
     el("span", { class: "name" }, "Memory"),
     el(

@@ -14,8 +14,12 @@
  * This file is the pure part: parsing and the sums. `gpu-live.ts` reads.
  */
 
-/** Dictation's grey words need 1800 MiB on the card (prifly's `GREY_NEEDS_MIB`) and a 500 MiB spare. */
-export const GREY_NEEDS_MIB = 1800 + 500;
+/**
+ * The free memory at which prifly starts dictation's grey words (its
+ * `GREY_START_FREE_MIB`), where the host has not said: it publishes its own as
+ * `greyNeeds` in `gpu-holders.json`, which wins (`readGreyNeeds`).
+ */
+export const GREY_NEEDS_MIB = 1536;
 /** A holders file older than this is from a host that is no longer running. */
 export const HOLDERS_FRESH_MS = 10 * 60_000;
 /** Windows processes named in the table; the rest of the card is "Windows other". */
@@ -143,7 +147,18 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
   return { named, vm, other: Math.max(0, used - vm - shown) };
 }
 
-export type Holder = { pid: number; which: string; label: string; model: string; mib: number };
+/** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
+export type Part = { model: string; mib: number };
+
+export type Holder = {
+  pid: number;
+  which: string;
+  label: string;
+  model: string;
+  mib: number;
+  /** Each model's share of `mib`, where the host says; empty for a worker with one model. */
+  parts: Part[];
+};
 
 /**
  * `gpu-holders.json`, read tolerantly. Null (use the one bar) when it is not
@@ -172,6 +187,35 @@ export function readHolders(
   return kept.length > 0 ? kept : null;
 }
 
+/** Whether dictation's grey words are running, would start on the free memory, or would not. */
+export type Grey = "on" | "fits" | "short";
+
+/**
+ * "on" when a live grey worker is listed (it holds its own memory, so free
+ * says nothing about it), else free memory against what the words need.
+ * `holders` is `readHolders`' answer: null for a missing or stale file, or nobody alive.
+ */
+export function greyState(holders: Holder[] | null, free: number, greyNeeds: number): Grey {
+  if (holders?.some((h) => h.which === "grey")) return "on";
+  return free >= greyNeeds ? "fits" : "short";
+}
+
+/** `gpu-holders.json`'s `greyNeeds`, MiB; null where the file is not fresh or does not say. */
+export function readGreyNeeds(text: string, now: number): number | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { at, greyNeeds } = parsed as { at?: unknown; greyNeeds?: unknown };
+  if (typeof at !== "number" || now - at > HOLDERS_FRESH_MS) return null;
+  return typeof greyNeeds === "number" && Number.isFinite(greyNeeds) && greyNeeds > 0
+    ? greyNeeds
+    : null;
+}
+
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** One entry of the file; null where it is not shaped like a holder. */
@@ -182,11 +226,25 @@ function holderOf(entry: unknown): Holder | null {
     return null;
   }
   const which = str(h["which"]);
-  return { pid, which, label: str(h["label"]) || which || "prifly", model: str(h["model"]), mib };
+  const label = str(h["label"]) || which || "prifly";
+  return { pid, which, label, model: str(h["model"]), mib, parts: partsOf(h["parts"]) };
+}
+
+/** A holder's `parts`; entries not shaped like a part are left out. */
+function partsOf(value: unknown): Part[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const p = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    const { mib } = p;
+    const model = str(p["model"]);
+    return model !== "" && typeof mib === "number" && Number.isFinite(mib) && mib >= 0
+      ? [{ model, mib }]
+      : [];
+  });
 }
 
 export type GpuRow = {
-  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`. */
+  /** The colour class: `g-final`, `g-grey`, `g-intent`, `g-wsl`, `g-win`, `g-win2`; a worker's later models add `g-part`. */
   kind: string;
   where: "Windows" | "prifly" | "WSL";
   name: string;
@@ -231,31 +289,45 @@ export function vmRows(
       },
     ];
   }
-  const sum = holders.reduce((a, h) => a + h.mib, 0);
   const listed = new Set(holders.map((h) => h.pid));
   const others = dxg === null ? [] : dxg.filter((p) => !listed.has(p.pid));
   // Only prifly's workers have the GPU open: the card's count for the VM is all theirs.
   const onlyHolders = holders.length > 0 && dxg !== null && others.length === 0;
+  const rows = holderRows(holders);
+  const sum = rows.reduce((a, r) => a + r.mib, 0);
   // The VM's figure is the card's own count: prifly's own may not exceed it.
   const scale = onlyHolders && sum > 0 ? vm / sum : sum > vm ? vm / sum : 1;
-  const rows: GpuRow[] = holders.map((h) => ({
-    kind: HOLDER_KIND[h.which] ?? "g-wsl",
-    where: "prifly",
-    name: h.label,
-    what: h.model,
-    mib: onlyHolders && sum <= 0 ? vm / holders.length : h.mib * scale,
-  }));
+  for (const row of rows) row.mib = onlyHolders && sum <= 0 ? vm / rows.length : row.mib * scale;
   const rest = Math.max(0, vm - sum);
   if (onlyHolders || rest < 1) return rows;
+  return [...rows, otherRow(others, rest)];
+}
+
+/** prifly's workers as rows, as they say: a worker with several models is a row per model, so the expensive one shows. */
+function holderRows(holders: Holder[]): GpuRow[] {
+  return holders.flatMap((h) => {
+    const kind = HOLDER_KIND[h.which] ?? "g-wsl";
+    const parts = h.parts.length > 0 ? h.parts : [{ model: h.model, mib: h.mib }];
+    return parts.map((part, i) => ({
+      kind: i === 0 ? kind : `${kind} g-part`,
+      where: "prifly" as const,
+      name: h.label,
+      what: part.model,
+      mib: part.mib,
+    }));
+  });
+}
+
+/** What is left of the VM's share, named after the other processes that have the GPU open. */
+function otherRow(others: DxgProcess[], mib: number): GpuRow {
   const names = others.map((p) => `${p.name} (pid ${p.pid})`);
-  rows.push({
+  return {
     kind: "g-wsl",
     where: "WSL",
     name: others.length > 0 && others.length <= NAMED_OTHERS ? names.join(", ") : "WSL other",
     what: others.length > NAMED_OTHERS ? names.join(", ") : "",
-    mib: rest,
-  });
-  return rows;
+    mib,
+  };
 }
 
 type Known = { name: string; what: string; where?: GpuRow["where"] };

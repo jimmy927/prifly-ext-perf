@@ -452,7 +452,7 @@ function status(current: State, seconds: number) {
   );
   const report = reportOf(current, procs?.value ?? null, sessions, containers);
   const gpu = current.gpu.status(current.windows);
-  const greyOff = gpu !== null && !gpu.loading && gpu.free < gpu.greyNeeds;
+  const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {
     headline: withGreyWords(
       headline(places(current, linuxBlock.linux?.verdicts ?? null, windowsJudged)),

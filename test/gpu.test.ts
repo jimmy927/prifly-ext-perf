@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  GREY_NEEDS_MIB,
+  greyState,
   HOLDERS_FRESH_MS,
   parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
+  readGreyNeeds,
   readHolders,
   rowsOf,
   shareOut,
@@ -208,6 +211,7 @@ describe("splitting the WSL share", () => {
     label: which,
     model: "m",
     mib,
+    parts: [],
   });
 
   test("prifly's holders and what is left of the VM's share as WSL other", () => {
@@ -216,6 +220,23 @@ describe("splitting the WSL share", () => {
       ["prifly", "final", 1500],
       ["prifly", "intent", 1000],
       ["WSL", "WSL other", 500],
+    ]);
+  });
+
+  test("a worker with several models is a row per model", () => {
+    const final = {
+      ...holder(1, "final", 2600),
+      label: "Dictation (final)",
+      parts: [
+        { model: "parakeet-tdt-0.6b", mib: 1800 },
+        { model: "whisper turbo", mib: 800 },
+      ],
+    };
+    const rows = vmRows(3000, [final]);
+    expect(rows.map((r) => [r.kind, r.name, r.what, r.mib])).toEqual([
+      ["g-final", "Dictation (final)", "parakeet-tdt-0.6b", 1800],
+      ["g-final g-part", "Dictation (final)", "whisper turbo", 800],
+      ["g-wsl", "WSL other", "", 400],
     ]);
   });
 
@@ -288,10 +309,31 @@ describe("gpu-holders.json", () => {
   const now = 10_000_000_000;
   const alive = (pid: number) => pid !== 99;
   const file = (at: number, holders: unknown[]) => JSON.stringify({ at, holders });
-  const good = { pid: 1, which: "final", label: "Settled text", model: "parakeet", mib: 2400 };
+  const grey = {
+    pid: 2,
+    which: "grey",
+    label: "Dictation (grey words)",
+    model: "parakeet-tdt-0.6b",
+    mib: 1800,
+    parts: [],
+  };
+  const good = {
+    pid: 1,
+    which: "final",
+    label: "Settled text",
+    model: "parakeet",
+    mib: 2400,
+    parts: [],
+  };
 
   test("a fresh file with live pids gives its holders", () => {
     expect(readHolders(file(now - 1000, [good]), now, alive)).toEqual([good]);
+  });
+
+  test("a holder's parts are read, and parts not shaped like one are left out", () => {
+    const parts = [{ model: "parakeet", mib: 1800 }, { model: "", mib: 1 }, { model: "x" }, 7];
+    const read = readHolders(file(now, [{ ...good, parts }]), now, alive);
+    expect(read?.[0]?.parts).toEqual([{ model: "parakeet", mib: 1800 }]);
   });
 
   test("a file older than ten minutes is stale", () => {
@@ -305,16 +347,103 @@ describe("gpu-holders.json", () => {
   });
 
   test("an unknown which stays a holder and nothing breaks", () => {
-    const odd = { pid: 2, which: "future-thing", label: "Something new", model: "x", mib: 10 };
+    const odd = {
+      pid: 2,
+      which: "future-thing",
+      label: "Something new",
+      model: "x",
+      mib: 10,
+      parts: [],
+    };
     const read = readHolders(file(now, [odd, { pid: "x" }, 5, null]), now, alive);
     expect(read).toEqual([odd]);
     expect(vmRows(100, read)[0]?.kind).toBe("g-wsl");
+  });
+
+  test("the grey words' line is the host's, from a fresh file only", () => {
+    const say = (at: number, greyNeeds: unknown) => JSON.stringify({ at, greyNeeds, holders: [] });
+    expect(readGreyNeeds(say(now, 1536), now)).toBe(1536);
+    expect(readGreyNeeds(say(now - HOLDERS_FRESH_MS - 1, 1536), now)).toBeNull();
+    expect(readGreyNeeds(say(now, "1536"), now)).toBeNull();
+    expect(readGreyNeeds(say(now, 0), now)).toBeNull();
+    expect(readGreyNeeds("not json", now)).toBeNull();
   });
 
   test("text that is not the file is no split", () => {
     expect(readHolders("not json", now, alive)).toBeNull();
     expect(readHolders("[]", now, alive)).toBeNull();
     expect(readHolders(JSON.stringify({ holders: [good] }), now, alive)).toBeNull();
+  });
+
+  describe("grey words", () => {
+    const read = (holders: unknown[], at = now) => readHolders(file(at, holders), now, alive);
+
+    test("a live grey worker is on, however little is free", () => {
+      expect(greyState(read([good, grey]), 379, GREY_NEEDS_MIB)).toBe("on");
+    });
+
+    test("without one they would start when free memory reaches what they need", () => {
+      expect(greyState(read([good]), 2300, 2300)).toBe("fits");
+      expect(greyState(null, 5000, GREY_NEEDS_MIB)).toBe("fits");
+    });
+
+    test("without one and without room they would not start", () => {
+      expect(greyState(null, 379, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([good]), 379, GREY_NEEDS_MIB)).toBe("short");
+    });
+
+    test("a grey worker whose pid is gone is not on", () => {
+      const gone = { ...grey, pid: 99 };
+      expect(greyState(read([good, gone]), 379, GREY_NEEDS_MIB)).toBe("short");
+      expect(greyState(read([gone]), 4000, GREY_NEEDS_MIB)).toBe("fits");
+    });
+
+    test("a stale file says nothing: the numbers decide", () => {
+      const stale = read([grey], now - HOLDERS_FRESH_MS - 1);
+      expect(greyState(stale, 379, GREY_NEEDS_MIB)).toBe("short");
+    });
+
+    test("the real file: both workers alive, 379 MiB free, grey is on", () => {
+      const real = JSON.stringify({
+        at: now,
+        greyNeeds: 1536,
+        holders: [
+          {
+            pid: 2672194,
+            which: "final",
+            label: "Dictation (final)",
+            model: "parakeet-tdt-0.6b + whisper turbo",
+            mib: 3800,
+            parts: [
+              { model: "parakeet-tdt-0.6b", mib: 1800 },
+              { model: "whisper turbo", mib: 2000 },
+            ],
+          },
+          {
+            pid: 2675350,
+            which: "grey",
+            label: "Dictation (grey words)",
+            model: "parakeet-tdt-0.6b",
+            mib: 1800,
+          },
+        ],
+      });
+      const needs = readGreyNeeds(real, now) ?? GREY_NEEDS_MIB;
+      expect(
+        greyState(
+          readHolders(real, now, () => true),
+          379,
+          needs,
+        ),
+      ).toBe("on");
+      expect(
+        greyState(
+          readHolders(real, now, (pid) => pid !== 2675350),
+          379,
+          needs,
+        ),
+      ).toBe("short");
+    });
   });
 });
 
@@ -324,7 +453,7 @@ describe("the headline", () => {
   test("grey words being off is said when nothing else is short", () => {
     const out = withGreyWords(h("good", "Nothing is short."), true);
     expect(out.tone).toBe("warning");
-    expect(out.text).toContain("Grey words");
+    expect(out.text).toContain("Grey words would not start");
   });
 
   test("a real shortage wins, and fitting grey words change nothing", () => {
