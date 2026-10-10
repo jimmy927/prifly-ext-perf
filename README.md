@@ -80,7 +80,11 @@ is the WSL VM (one instance per WSL process using the GPU, so its instances
 add up), split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
 (fresh, live pids only), else one "prifly (WSL)" bar. A worker whose entry
 carries `parts` (`[{model, mib}]`, such as Parakeet and turbo in dictation's
-final worker) is a row per model, the second one lighter. The workers' figures are
+final worker) is a row per model, the second one lighter. Under Why, a prifly
+row says what its model does, then the model: "Detects which language you speak;
+turns Swedish speech into text · whisper turbo". A `role` string on the entry or
+on a part (the host's own words) is shown instead of the built-in sentence, and a
+model nobody described shows its name alone. The workers' figures are
 estimates, so the card also looks at which WSL processes have `/dev/dxg` (the
 GPU) open: when only prifly's workers do, they share the whole of the VM's
 figure and there is no "WSL other" row; when another process does, the

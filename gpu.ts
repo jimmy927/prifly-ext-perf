@@ -164,7 +164,12 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
 }
 
 /** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
-export type Part = { model: string; mib: number };
+export type Part = {
+  model: string;
+  mib: number;
+  /** What the model does, in the host's own words; shown instead of the built-in description. */
+  role?: string;
+};
 
 export type Holder = {
   pid: number;
@@ -174,6 +179,8 @@ export type Holder = {
   mib: number;
   /** Each model's share of `mib`, where the host says; empty for a worker with one model. */
   parts: Part[];
+  /** What the worker's one model does, where the host says; a part's own `role` goes with that part. */
+  role?: string;
 };
 
 /**
@@ -243,7 +250,16 @@ function holderOf(entry: unknown): Holder | null {
   }
   const which = str(h["which"]);
   const label = str(h["label"]) || which || "prifly";
-  return { pid, which, label, model: str(h["model"]), mib, parts: partsOf(h["parts"]) };
+  const role = str(h["role"]);
+  const holder: Holder = {
+    pid,
+    which,
+    label,
+    model: str(h["model"]),
+    mib,
+    parts: partsOf(h["parts"]),
+  };
+  return role === "" ? holder : { ...holder, role };
 }
 
 /** A holder's `parts`; entries not shaped like a part are left out. */
@@ -253,9 +269,9 @@ function partsOf(value: unknown): Part[] {
     const p = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
     const { mib } = p;
     const model = str(p["model"]);
-    return model !== "" && typeof mib === "number" && Number.isFinite(mib) && mib >= 0
-      ? [{ model, mib }]
-      : [];
+    if (model === "" || typeof mib !== "number" || !Number.isFinite(mib) || mib < 0) return [];
+    const role = str(p["role"]);
+    return [role === "" ? { model, mib } : { model, mib, role }];
   });
 }
 
@@ -323,15 +339,32 @@ export function vmRows(
 function holderRows(holders: Holder[]): GpuRow[] {
   return holders.flatMap((h) => {
     const kind = HOLDER_KIND[h.which] ?? "g-wsl";
-    const parts = h.parts.length > 0 ? h.parts : [{ model: h.model, mib: h.mib }];
+    const parts: Part[] =
+      h.parts.length > 0
+        ? h.parts
+        : [{ model: h.model, mib: h.mib, ...(h.role === undefined ? {} : { role: h.role }) }];
     return parts.map((part, i) => ({
       kind: i === 0 ? kind : `${kind} g-part`,
       where: "prifly" as const,
       name: h.label,
-      what: part.model,
+      what: modelWhy(h.which, part),
       mib: part.mib,
     }));
   });
+}
+
+/** What prifly's models do, by the holder's `which` and the model, in a sentence a reader can follow. */
+const KNOWN_MODELS: Record<string, string> = {
+  "final|parakeet-tdt-0.6b":
+    "Turns your speech into the final text (English and other languages it knows)",
+  "final|whisper turbo": "Detects which language you speak; turns Swedish speech into text",
+  "grey|parakeet-tdt-0.6b": "Shows your words in grey while you're still speaking",
+};
+
+/** A prifly row's Why: the host's own `role` or the known description, then ` · model`; the model alone where neither is known. */
+function modelWhy(which: string, part: Part): string {
+  const role = part.role ?? KNOWN_MODELS[`${which}|${part.model}`];
+  return role === undefined ? part.model : `${role} · ${part.model}`;
 }
 
 /** What is left of the VM's share, named after the other processes that have the GPU open. */

@@ -234,8 +234,18 @@ describe("splitting the WSL share", () => {
     };
     const rows = vmRows(3000, [final]);
     expect(rows.map((r) => [r.kind, r.name, r.what, r.mib])).toEqual([
-      ["g-final", "Dictation (final)", "parakeet-tdt-0.6b", 1800],
-      ["g-final g-part", "Dictation (final)", "whisper turbo", 800],
+      [
+        "g-final",
+        "Dictation (final)",
+        "Turns your speech into the final text (English and other languages it knows) · parakeet-tdt-0.6b",
+        1800,
+      ],
+      [
+        "g-final g-part",
+        "Dictation (final)",
+        "Detects which language you speak; turns Swedish speech into text · whisper turbo",
+        800,
+      ],
       ["g-wsl", "WSL other", "", 400],
     ]);
   });
