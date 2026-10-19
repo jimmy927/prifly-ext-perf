@@ -2,7 +2,7 @@
   "id": "perf",
   "name": "Performance",
   "description": "Whether this machine is out of CPU, memory or disk — in WSL and in Windows — in green, orange and red, with what uses it; and a tab for prifly itself: its processes, sessions and MCP servers.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "index.ts",
   "panels": [
     {

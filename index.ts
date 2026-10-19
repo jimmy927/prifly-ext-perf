@@ -6,7 +6,7 @@
  * sessions, how many MCP servers they started, and what each costs.
  *
  * Linux is read every second, always: a few small files, for the chip.
- * Windows' counters come from one `typeperf` that stays running. The process
+ * Windows' counters come from one `typeperf` at a time, always running. The process
  * table, Docker's containers, Windows' busiest processes and the cloud
  * sessions are read only while the window is open, since nothing else shows them — except that the
  * process table is also read every 5 s whenever WSL's CPU or memory is not

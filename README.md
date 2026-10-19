@@ -195,8 +195,8 @@ you are.
   `/proc/vmstat` and `/proc/loadavg`, every second, the last hour kept. This is the WSL VM's single
   kernel, so Docker Desktop's containers count in these totals. They run in a
   distro of their own, though, so they never appear in the process list.
-- **Windows**: one `typeperf.exe` that stays running and prints its counters
-  every second, the last hour kept; if it ends, it is started again. One `powershell.exe` is started on first
+- **Windows**: one `typeperf.exe` at a time, always running, that prints its counters
+  every second, the last hour kept. Each ends by itself after 50 samples and the next is started a few seconds before, so a host that dies without a word (SIGKILL) leaves none running for more than about a minute; the host's exit and SIGTERM/SIGINT end it at once. If one ends early, it is started again in 30 s. One `powershell.exe` is started on first
   use and stays running (no console flashing up); it reads the machine's name, cores and
   memory once and answers the calls below.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
