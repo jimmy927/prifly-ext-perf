@@ -3,7 +3,8 @@
  * where the tools are): one `typeperf.exe` at a time, always running, that
  * prints the counters below every second as CSV — about two seconds to start,
  * where a PowerShell per poll would cost that every time. Which processes use the CPU
- * comes from one PowerShell that stays running too (`topProcesses`).
+ * comes from one PowerShell that stays running too (`topProcesses`), and so,
+ * on a host on Windows itself, do the host's own processes (`hostTreeOf`).
  *
  * On a Linux with no Windows around it there is no Windows to read:
  * `windowsTools()` is false and the panel shows Linux alone.
@@ -15,6 +16,7 @@ import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
 import { HOST } from "./host";
 import { type HostProcess, hookHostExit, realProcess } from "./host-exit";
+import type { ProcReading, ProcSnapshot } from "./procs";
 import { HOUR, keep } from "./ring";
 import { ScriptShell, type ShellChild } from "./shell";
 
@@ -394,6 +396,91 @@ export function gpuProcessCounters(): Promise<string> {
       "Get-Process | % { 'P|' + $_.Id + '|' + $_.ProcessName }",
     20_000,
   );
+}
+
+/**
+ * Every Windows process, one line each:
+ * `pid|parent pid|created (ticks)|name|kernel+user time (100 ns)|working set|read|written|command line`,
+ * for `hostTreeOf`. The command line goes last, as it may hold a `|`.
+ */
+export function windowsProcessList(): Promise<string> {
+  return powershell(
+    "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,Name,KernelModeTime,UserModeTime,WorkingSetSize,ReadTransferCount,WriteTransferCount,CommandLine | " +
+      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}', " +
+      "$_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.Ticks } else { 0 }), $_.Name, " +
+      "$_.KernelModeTime + $_.UserModeTime, $_.WorkingSetSize, $_.ReadTransferCount, $_.WriteTransferCount, " +
+      "($_.CommandLine -replace '[\\r\\n]+', ' ')) }",
+    20_000,
+  );
+}
+
+type WindowsRow = ProcReading & { created: number };
+
+/** One line of `windowsProcessList`; null for a line that is not one. A field Windows left empty is 0. */
+function windowsRowOf(line: string): WindowsRow | null {
+  const cells = line.split("|");
+  if (cells.length < 9 || !/^\d+$/.test(cells[0] ?? "")) return null;
+  const [pid, ppid, created, , time, workingSet, read, write] = cells.map(
+    (cell) => Number(cell) || 0,
+  );
+  const command = cells.slice(8).join("|").trim();
+  return {
+    pid: pid ?? 0,
+    ppid: ppid ?? 0,
+    comm: (cells[3] ?? "").replace(/\.exe$/i, ""),
+    argv: command === "" ? [] : splitCommandLine(command),
+    rss: workingSet ?? 0,
+    ticks: (time ?? 0) / 100_000,
+    read: read ?? 0,
+    write: write ?? 0,
+    created: created ?? 0,
+  };
+}
+
+/** A Windows command line as arguments: split at spaces outside quotes, the quotes dropped. */
+export function splitCommandLine(line: string): string[] {
+  return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? "");
+}
+
+/** Each process's children, by its pid; the idle process, its own parent, is no one's child. */
+function childrenOf(rows: Iterable<WindowsRow>): Map<number, WindowsRow[]> {
+  const children = new Map<number, WindowsRow[]>();
+  for (const row of rows) {
+    if (row.pid === row.ppid) continue;
+    const list = children.get(row.ppid) ?? [];
+    list.push(row);
+    children.set(row.ppid, list);
+  }
+  return children;
+}
+
+/**
+ * The host (`hostPid`) and every process under it, from `windowsProcessList`'s
+ * output, as process readings `averageProcs` can average: CPU in ticks of
+ * 10 ms (Windows counts 100 ns), memory as the working set, and read and
+ * written as all I/O, which on Windows is not disk alone. A child must have
+ * started after its parent: Windows reuses a dead parent's pid, so one that
+ * did not is someone else's. Empty when the host is not in the list.
+ */
+export function hostTreeOf(out: string, hostPid: number, at: number): ProcSnapshot {
+  const rows = new Map<number, WindowsRow>();
+  for (const line of out.split(/\r?\n/)) {
+    const row = windowsRowOf(line);
+    if (row !== null) rows.set(row.pid, row);
+  }
+  const procs = new Map<number, ProcReading>();
+  const host = rows.get(hostPid);
+  if (host === undefined) return { at, procs };
+  const children = childrenOf(rows.values());
+  const stack = [host];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    const { created: _created, ...reading } = next;
+    procs.set(next.pid, reading);
+    for (const child of children.get(next.pid) ?? []) {
+      if (child.created >= next.created && !procs.has(child.pid)) stack.push(child);
+    }
+  }
+  return { at, procs };
 }
 
 export function sumByName(out: string): WindowsProcess[] {
