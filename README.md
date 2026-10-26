@@ -53,6 +53,22 @@ and a sparkline of the averages:
 | **Disk** | read and write rates, time stalled waiting for disk | % busy, time per request, rates, queue |
 | last row | load average, uncoloured | writes to the page file, uncoloured |
 
+### Where it goes
+
+The card under the headline answers what is prifly's and what is not, and what
+is WSL's and what is Windows'. CPU and Memory are each one row across the whole
+machine (Windows' cores and RAM), split into a Windows group (prifly, other
+Windows, free) and a WSL VM group (prifly sessions, Docker, other WSL and, for
+memory, what the VM holds unused). The groups are as wide as what they hold:
+the VM's size for memory, what WSL uses for CPU. The VM's share of what Windows
+counts as used is taken out of Windows' side, so nothing is counted twice. The
+table under the bars gives the same as cores and memory for prifly and for
+everything else, by Windows, WSL and the machine, with a link to the prifly tab.
+It is left out on a Linux host with no Windows, and WSL reads "not running" when
+the VM is down.
+
+### Busiest processes
+
 **What uses the CPU now** lists the busiest processes on both sides. A WSL
 process that belongs to a prifly session is named with that session.
 

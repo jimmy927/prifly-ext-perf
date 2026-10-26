@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="bars.css" />
     <link rel="stylesheet" href="gpu.css" />
+    <link rel="stylesheet" href="where.css" />
     <script>
       // Before the first paint: the window says light or dark in the query.
       if (new URLSearchParams(location.search).get("theme") === "dark") {
@@ -30,6 +31,7 @@
 
       <section id="machine">
         <div class="verdict" id="verdict"><span class="dot"></span><span id="headline"></span></div>
+        <div id="where" hidden></div>
         <div class="hosts" id="hosts"></div>
         <div class="sub">What uses the CPU now</div>
         <div class="card">

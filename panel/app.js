@@ -8,6 +8,7 @@ import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
 import { gpuCard } from "./gpu.js";
 import { drawMcp } from "./mcp.js";
+import { drawWhere } from "./where.js";
 
 let last = null;
 
@@ -159,6 +160,7 @@ function drawTop(state) {
 function drawMachine(state) {
   $("verdict").className = `verdict ${state.headline.tone}`;
   $("headline").textContent = state.headline.text;
+  drawWhere(state);
   const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
   if (state.windows !== null) cards.push(windowsCard(state.windows));
   $("hosts").replaceChildren(...cards);

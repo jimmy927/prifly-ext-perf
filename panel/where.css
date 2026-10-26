@@ -1,0 +1,92 @@
+/* The "Where it goes" card (where.js): CPU and memory over the whole machine,
+   a group for Windows and one for the WSL VM, and the table under them. */
+:root {
+  /* The line under each group's caption, in the colour of its host card. */
+  --where-win: color-mix(in srgb, var(--k-host) 50%, transparent);
+  --where-wsl: color-mix(in srgb, var(--k-containers) 60%, transparent);
+  /* Memory the VM holds that nothing in it uses: tinted, so it is not Windows' own free part. */
+  --where-vm-free: color-mix(in srgb, var(--k-containers) 10%, var(--muted));
+}
+:root.dark {
+  --where-win: color-mix(in srgb, var(--k-host) 65%, transparent);
+  --where-wsl: color-mix(in srgb, var(--k-containers) 70%, transparent);
+  --where-vm-free: color-mix(in srgb, var(--k-containers) 16%, var(--muted));
+}
+#where {
+  margin-bottom: 14px;
+}
+.where-row {
+  padding: 10px 12px 0;
+}
+.where-row:last-child {
+  padding-bottom: 12px;
+}
+.groups {
+  display: flex;
+  gap: 6px;
+}
+.group {
+  min-width: 0;
+}
+.group.wsl {
+  min-width: 64px;
+}
+.group .cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px 3px;
+  margin-bottom: 4px;
+  border-bottom: 2px solid var(--border);
+  color: var(--muted-fg);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.group.win .cap {
+  border-bottom-color: var(--where-win);
+}
+.group.wsl .cap {
+  border-bottom-color: var(--where-wsl);
+}
+.group .stack {
+  border-radius: 4px;
+}
+.k-vmfree {
+  background: var(--where-vm-free);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.k-vmfree,
+.k-free {
+  color: var(--muted-fg);
+}
+table.matrix td,
+table.matrix th {
+  padding: 7px 12px;
+}
+table.matrix tbody tr.p td:first-child {
+  font-weight: 600;
+}
+table.matrix td.none {
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+table.matrix td.num.none {
+  font-size: 12px;
+}
+table.matrix i.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+table.matrix a {
+  color: var(--work);
+  font-size: 12px;
+  text-decoration: none;
+}
+table.matrix a:hover {
+  text-decoration: underline;
+}
