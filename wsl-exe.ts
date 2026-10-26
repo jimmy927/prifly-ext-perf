@@ -4,6 +4,9 @@
  * its stdin (`tail` of the same `/proc` files `wsl.ts` reads, each under a
  * `==> /proc/… <==` header), whose output goes through `wsl.ts`'s parsers.
  * No `\\wsl.localhost`, and no process started per read but the `tail`.
+ * While someone looks, the same shell also reads the process table and
+ * Docker's cgroups (`PROCS_READ`, through `tables.ts`) and asks the `docker`
+ * inside WSL what each container is.
  *
  * `wsl.exe` would boot the WSL VM if it is not running, and keep it from
  * shutting down while it runs: so it is started only once
@@ -13,7 +16,15 @@
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import {
+  type ContainerReading,
+  type ContainerSnapshot,
+  cgroupIdOf,
+  containerReadingOf,
+  ROOTS,
+} from "./docker";
 import { HOST } from "./host";
+import { type ProcReading, type ProcSnapshot, readingOf } from "./procs";
 import { type Frame, ScriptShell, type ShellChild } from "./shell";
 import { coresOf, type LinuxFiles, type LinuxRaw, parsePressure, rawOf } from "./wsl";
 
@@ -58,6 +69,79 @@ export function parseWslRead(out: string, at: number): LinuxRaw | null {
     io: pressure("io"),
   };
   return rawOf(linux, at, coresOf(stat));
+}
+
+/**
+ * The process table and Docker's cgroups, in one `head` each, for a host on
+ * Windows itself: every process's `stat`, `io` and `cmdline`, and each
+ * container's cgroup counters, each file under a `==> <path> <==` header.
+ * Two processes a read, not three per pid. A `cmdline` keeps its NULs, and is
+ * cut at 4 KiB: a `claude`'s system prompt is tens of KiB and says nothing
+ * about what it is. A file that is not ours to read (another user's `io`), or
+ * whose process ended, is left out quietly. The `echo` between the two is the
+ * newline `head` puts between files, so the cgroups' first header starts a line.
+ */
+export const PROCS_READ =
+  "(cd /proc && head -vc 4096 -- [0-9]*/stat [0-9]*/io [0-9]*/cmdline 2>/dev/null; echo; " +
+  "cd /sys/fs/cgroup 2>/dev/null && head -vc 65536 -- " +
+  ["docker/*", "system.slice/docker-*.scope"]
+    .flatMap((dir) => ["cpu.stat", "memory.current", "memory.stat"].map((f) => `${dir}/${f}`))
+    .join(" ") +
+  " 2>/dev/null)";
+
+/**
+ * `head`'s output split into each file's text, by its `==> <path> <==` header,
+ * less the newline `head` puts between files. A command line that holds such
+ * a header on a line of its own would cut its file short; only one written to
+ * fool this could.
+ */
+export function headSections(out: string): Map<string, string> {
+  const files = new Map<string, string>();
+  const parts = out.split(/^==> (.+) <==\n/m);
+  for (let at = 1; at + 1 < parts.length; at += 2) {
+    files.set(parts[at] ?? "", (parts[at + 1] ?? "").replace(/\n$/, ""));
+  }
+  return files;
+}
+
+/** One read of the process table and the containers from `PROCS_READ`'s output. */
+export function parseProcsRead(
+  out: string,
+  at: number,
+): { procs: ProcSnapshot; containers: ContainerSnapshot } {
+  const files = headSections(out);
+  return {
+    procs: { at, procs: procsOf(files) },
+    containers: { at, containers: containersOf(files) },
+  };
+}
+
+function procsOf(files: Map<string, string>): Map<number, ProcReading> {
+  const procs = new Map<number, ProcReading>();
+  for (const [path, stat] of files) {
+    const pid = Number(/^(\d+)\/stat$/.exec(path)?.[1] ?? Number.NaN);
+    const cmdline = files.get(`${pid}/cmdline`);
+    // Not a stat, or it ended between its stat and its command line: read again next time.
+    if (Number.isNaN(pid) || cmdline === undefined) continue;
+    const reading = readingOf(pid, stat, cmdline, files.get(`${pid}/io`) ?? null);
+    if (reading !== null) procs.set(pid, reading);
+  }
+  return procs;
+}
+
+function containersOf(files: Map<string, string>): Map<string, ContainerReading> {
+  const containers = new Map<string, ContainerReading>();
+  for (const [path, cpuStat] of files) {
+    const [root, name, file] = path.split("/");
+    const id = cgroupIdOf(name ?? "");
+    const current = files.get(`${root}/${name}/memory.current`);
+    const stat = files.get(`${root}/${name}/memory.stat`);
+    if (file !== "cpu.stat" || id === null || !ROOTS.includes(root ?? "")) continue;
+    // Stopped between its files: read again next time.
+    if (current === undefined || stat === undefined) continue;
+    containers.set(id, containerReadingOf(id, cpuStat, current, stat));
+  }
+  return containers;
 }
 
 /** `wsl.exe`'s output: UTF-16 unless `WSL_UTF8` took, so the NULs go either way. */
@@ -192,6 +276,17 @@ export class WslLinux {
       .finally(() => {
         this.busy = false;
       });
+  }
+
+  /**
+   * Runs `script` in the same shell, after what it already runs; its output.
+   * Rejects while WSL is not read, so it never starts a `wsl.exe` of its own.
+   * A script that times out ends the shell, and so counts as WSL gone.
+   */
+  run(script: string, timeout: number): Promise<string> {
+    const shell = this.shell;
+    if (shell === null || this.absent !== "") return Promise.reject(new Error(this.absent));
+    return shell.run(script, timeout);
   }
 
   /**

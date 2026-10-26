@@ -7,7 +7,8 @@
  * `system.slice/docker-<id>.scope` (Docker Engine under systemd).
  *
  * What each container is — its name, and the paths it mounts — comes from
- * Docker's API on its socket, every 10 s. The paths say which session started
+ * Docker's API on its socket, every 10 s; a host on Windows itself asks the
+ * `docker` command inside WSL instead (`DOCKER_INSPECT`). The paths say which session started
  * it: a mount of a session's scratchpad names the session outright, and a
  * mount or compose project inside one session's folder points at that
  * session. Docker Desktop reports mounts by its own paths
@@ -41,9 +42,14 @@ export type Container = {
   session: string;
 };
 
-/** Where Docker Desktop and Docker Engine under systemd put containers' cgroups. */
-const ROOTS = ["/sys/fs/cgroup/docker", "/sys/fs/cgroup/system.slice"];
+/** Where Docker Desktop and Docker Engine under systemd put containers' cgroups, under `/sys/fs/cgroup`. */
+export const ROOTS = ["docker", "system.slice"];
 const CGROUP = /^(?:docker-)?([0-9a-f]{64})(?:\.scope)?$/;
+
+/** A container's id from its cgroup folder's name; null for a folder that is no container's. */
+export function cgroupIdOf(name: string): string | null {
+  return CGROUP.exec(name)?.[1] ?? null;
+}
 
 /** `usage_usec` from a cgroup's `cpu.stat`. */
 export function parseCpuStat(text: string): number {
@@ -55,15 +61,29 @@ export function memoryStat(text: string, field: string): number {
   return Number(new RegExp(`^${field} (\\d+)`, "m").exec(text)?.[1] ?? 0);
 }
 
+/** One container from the text of its cgroup's `cpu.stat`, `memory.current` and `memory.stat`. */
+export function containerReadingOf(
+  id: string,
+  cpuStat: string,
+  memoryCurrent: string,
+  memoryStatText: string,
+): ContainerReading {
+  const inactive = memoryStat(memoryStatText, "inactive_file");
+  return {
+    id,
+    usage: parseCpuStat(cpuStat),
+    memory: Math.max(0, Number(memoryCurrent) - inactive),
+  };
+}
+
 function readOne(dir: string, id: string): ContainerReading | null {
   try {
-    const current = Number(readFileSync(`${dir}/memory.current`, "utf8"));
-    const inactive = memoryStat(readFileSync(`${dir}/memory.stat`, "utf8"), "inactive_file");
-    return {
+    return containerReadingOf(
       id,
-      usage: parseCpuStat(readFileSync(`${dir}/cpu.stat`, "utf8")),
-      memory: Math.max(0, current - inactive),
-    };
+      readFileSync(`${dir}/cpu.stat`, "utf8"),
+      readFileSync(`${dir}/memory.current`, "utf8"),
+      readFileSync(`${dir}/memory.stat`, "utf8"),
+    );
   } catch (error) {
     // Stopped between the listing and the read.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -74,7 +94,8 @@ function readOne(dir: string, id: string): ContainerReading | null {
 /** Reads every running container's cgroup now; none where there is no Docker. */
 export function readContainers(): ContainerSnapshot {
   const containers = new Map<string, ContainerReading>();
-  for (const root of ROOTS) {
+  for (const folder of ROOTS) {
+    const root = `/sys/fs/cgroup/${folder}`;
     let names: string[];
     try {
       names = readdirSync(root);
@@ -82,8 +103,8 @@ export function readContainers(): ContainerSnapshot {
       continue;
     }
     for (const name of names) {
-      const id = CGROUP.exec(name)?.[1];
-      if (id === undefined) continue;
+      const id = cgroupIdOf(name);
+      if (id === null) continue;
       const one = readOne(`${root}/${name}`, id);
       if (one !== null) containers.set(id, one);
     }
@@ -167,4 +188,29 @@ export async function containerInfos(): Promise<Map<string, ContainerInfo>> {
   if (!response.ok) throw new Error(`Docker answered ${response.status}`);
   const list = (await response.json()) as ApiContainer[];
   return new Map(list.map((api) => [api.Id, infoOf(api)]));
+}
+
+/**
+ * The same question asked from a host on Windows itself, through the shell
+ * inside WSL (`wsl-exe.ts`): the `docker` there talks to the same Docker, and
+ * prints one JSON line per running container, shaped like the API's answer.
+ */
+export const DOCKER_INSPECT =
+  "docker ps -q --no-trunc | xargs -r docker inspect --format " +
+  `'{"Id":{{json .Id}},"Names":[{{json .Name}}],"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}}}' 2>&1`;
+
+/** What `DOCKER_INSPECT` printed; an error when a line is not JSON (no `docker`, say), with that line. */
+export function parseInspect(out: string): Map<string, ContainerInfo> {
+  const infos = new Map<string, ContainerInfo>();
+  for (const line of out.replace(/\r/g, "").split("\n")) {
+    if (line.trim() === "") continue;
+    let api: ApiContainer;
+    try {
+      api = JSON.parse(line) as ApiContainer;
+    } catch {
+      throw new Error(`docker in WSL: ${line.slice(0, 200)}`);
+    }
+    infos.set(api.Id, infoOf(api));
+  }
+  return infos;
 }

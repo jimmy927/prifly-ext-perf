@@ -219,7 +219,7 @@ you are.
   while the window is open (it asks every second; 10 s without, and it counts as closed), the last five
   minutes kept. With the window closed they are read every 5 s, and only while
   WSL's CPU or memory is not green, 30 s kept, for the nanny. The extension runs inside the host, so the host is its own
-  process. Relays outlive the host, so after a restart they belong to init
+  process (on a host on Windows itself, see below). Relays outlive the host, so after a restart they belong to init
   and are found by their command line instead.
 - **MCP servers**: matched against the `mcpServers` in `~/.claude.json` (user
   scope, and per folder under `projects`) and the nearest `.mcp.json`, by the
@@ -248,9 +248,32 @@ so far is dropped, as it says nothing about now, and `wsl.exe` is asked again a
 minute later. With no WSL running, the WSL card says why and the window shows
 Windows alone.
 
-Such a host reads no process table and no Docker containers: the prifly tab
-says so, the nanny names no sessions, and **What uses the CPU now** lists
-Windows' processes only.
+Its sessions still run inside WSL, under prifly's agent there
+(`prifly-agent`): each `claude` hangs under a `prifly-agent relay <relays dir>
+<session id>`, the agent itself (`prifly-agent --port … --relay-dir …`) counts
+as the host, and a git button's or a land's runner is a `prifly-agent
+…/runners/r-<hash>/op-runner.js`. While the window is open (and, for the nanny,
+every 5 s while WSL's CPU or memory is not green) the same shell also reads the
+process table and Docker's cgroups: one line sent, `head -v` of every
+`/proc/<pid>/stat`, `io` and `cmdline` (the command line cut at 4 KiB, its NULs
+kept) and of each container's `cpu.stat`, `memory.current` and `memory.stat`,
+each file under its header, parsed by the same parsers as a host inside WSL.
+At most one such read is in flight; one that takes over 10 s ends the shell,
+which is WSL gone. Containers' names and mounts come from the `docker` command
+inside WSL (`docker ps` and `docker inspect`, every 10 s while one runs),
+which talks to the same Docker. So the prifly tab, the nanny and **What uses
+the CPU now** work as on a host inside WSL. While WSL is not running, the
+prifly tab says why, and the table and containers kept so far are dropped.
+
+The host's own Windows processes — the host, and everything under it by parent
+pid: dictation's and the intent model's workers, the WebView2 window, its own
+short `claude` calls — come from the shared PowerShell (`Win32_Process`, every
+2 s while the window is open). They count in the prifly tab as the host's, its
+dictation's and its intent model's, as on Linux, and the page's status has
+them apart as `priflyWindows`. Their read and write are all I/O, as Windows
+counts it, not disk alone. A process whose parent pid is the host's but that
+started before the host had a dead parent whose pid Windows reused: it is not
+counted.
 
 ## Install
 

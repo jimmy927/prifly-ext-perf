@@ -15,28 +15,32 @@
  * it asked for (`average.ts`).
  *
  * A host on Windows itself (`host.ts`) reads Windows the same way, and the WSL
- * VM's Linux through one `wsl.exe` (`wsl-exe.ts`) while WSL runs; it reads no
- * process table and no containers, so it has no nanny and no prifly tab.
+ * VM's Linux through one `wsl.exe` (`wsl-exe.ts`) while WSL runs: the same
+ * files a second, and, when the process table is read, that table and the
+ * containers' cgroups through the same shell. Its sessions run inside WSL, so
+ * the prifly tab and the nanny work from that table; the host's own Windows
+ * processes (the host and all it started) come from the shared PowerShell.
  */
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
-import {
-  type Container,
-  type ContainerInfo,
-  type ContainerSnapshot,
-  containerInfos,
-  ownerOf,
-  readContainers,
-} from "./docker";
+import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { historyOf } from "./history";
 import { HOST } from "./host";
 import { McpConfig } from "./mcp";
 import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
-import { ownerIdsOf, priflyReport, type ToolUse, toolUseOf, topLinux } from "./prifly";
-import type { Decoration, ExtensionApi, ExtensionSession, PanelRequest } from "./prifly-api";
-import { type Proc, type ProcSnapshot, readProcs } from "./procs";
+import {
+  ownerIdsOf,
+  priflyReport,
+  type ToolUse,
+  toolUseOf,
+  topLinux,
+  type Usage,
+  usageOf,
+} from "./prifly";
+import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { HOUR, keep } from "./ring";
+import { Tables } from "./tables";
 import {
   headline,
   linuxVerdicts,
@@ -77,11 +81,7 @@ const NANNY_MIN_SPAN = 3;
 /** The window asks every second; it counts as open while it asked within this. */
 const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
-/** Containers' names and mounts change only when one starts or stops. */
-const DOCKER_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
-const PROCS_ABSENT =
-  "prifly runs on Windows itself here, and its processes are read only from inside WSL: not on this host.";
 
 type State = {
   api: ExtensionApi;
@@ -89,15 +89,11 @@ type State = {
   linux: LinuxRaw[];
   /** On a host on Windows itself, what reads the WSL VM; null where Linux is this host's `/proc`. */
   wsl: WslLinux | null;
-  /** Whether this host's process table and Docker's containers are read: not on Windows itself. */
-  procsHere: boolean;
-  /** The last five minutes of process tables, one a second while the window is open. */
-  procs: ProcSnapshot[];
-  /** Docker's containers, read with the process table. */
-  containers: ContainerSnapshot[];
-  /** What each container is, by id, as Docker last said (`docker.ts`). */
-  dockerInfos: Map<string, ContainerInfo>;
-  dockerAt: number;
+  /**
+   * The process tables (the last five minutes, one a second, while the window
+   * is open), Docker's containers, and a host on Windows' own processes.
+   */
+  tables: Tables;
   windows: WindowsSampler | null;
   info: WindowsInfo | null;
   topWindows: WindowsProcess[];
@@ -199,7 +195,7 @@ function open(current: State): boolean {
 
 function refreshWhileOpen(current: State): void {
   const now = Date.now();
-  if (current.procsHere) readProcsAndContainers(current, now);
+  current.tables.readAll(PROCS_KEEP, now);
   current.gpu.refresh(current.windows, now);
   if (current.windows !== null && now - current.topWindowsAt > TOP_WINDOWS_EVERY) {
     current.topWindowsAt = now;
@@ -224,22 +220,6 @@ function refreshWhileOpen(current: State): void {
   }
 }
 
-function readProcsAndContainers(current: State, now: number): void {
-  keep(current.procs, readProcs(), PROCS_KEEP);
-  const containers = readContainers();
-  keep(current.containers, containers, PROCS_KEEP);
-  // Docker is asked only when a container runs: with none there may be no Docker to ask.
-  if (containers.containers.size > 0 && now - current.dockerAt > DOCKER_EVERY) {
-    current.dockerAt = now;
-    containerInfos()
-      .then((infos) => {
-        current.dockerInfos = infos;
-      })
-      // Until Docker answers, the containers go by their ids.
-      .catch((error: unknown) => current.api.log("docker_failed", { error: String(error) }));
-  }
-}
-
 /**
  * While WSL's CPU or memory is not green and the window is closed, nobody else
  * reads the process table: read it every 5 s, and keep 30 s of it. After a
@@ -247,10 +227,11 @@ function readProcsAndContainers(current: State, now: number): void {
  */
 function readForNanny(current: State, verdicts: Verdicts, now: number): void {
   if (verdicts.cpu === "good" && verdicts.memory === "good") return;
-  const last = current.procs.at(-1);
+  const procs = current.tables.procs;
+  const last = procs.at(-1);
   if (last !== undefined && now - last.at < NANNY_EVERY - 250) return;
-  if (last !== undefined && now - last.at > NANNY_STALE) current.procs.length = 0;
-  keep(current.procs, readProcs(), NANNY_KEEP);
+  if (last !== undefined && now - last.at > NANNY_STALE) procs.length = 0;
+  current.tables.readProcs(NANNY_KEEP);
 }
 
 /**
@@ -260,10 +241,10 @@ function readForNanny(current: State, verdicts: Verdicts, now: number): void {
  * anything: a nanny that cannot see says nothing.
  */
 function nannyUse(current: State, now: number): State["nannyUse"] {
-  const last = current.procs.at(-1);
+  const last = current.tables.procs.at(-1);
   if (last === undefined || now - last.at > NANNY_STALE) return null;
   if (current.nannyUse?.at === last.at) return current.nannyUse;
-  const procs = averageProcs(current.procs, NANNY_KEEP);
+  const procs = averageProcs(current.tables.procs, NANNY_KEEP);
   if (procs === null || procs.covered < NANNY_MIN_SPAN) return null;
   // The machine's busy cores over the same stretch, less every process some session owns:
   // what is left is Docker, Windows-side work, or something started by hand.
@@ -337,7 +318,10 @@ function tick(current: State): void {
     // Its answer lands in the ring a moment later (`activate`).
     current.wsl.poll();
     // No WSL now: what was kept is from before the gap, and says nothing about now.
-    if (current.wsl.absent !== "") current.linux.length = 0;
+    if (current.wsl.absent !== "") {
+      current.linux.length = 0;
+      current.tables.clearWsl();
+    }
   }
   if (open(current)) refreshWhileOpen(current);
   const linux = averageLinux(current.linux, CHIP_WINDOW);
@@ -349,9 +333,7 @@ function tick(current: State): void {
     return;
   }
   const verdicts = linuxVerdicts(linux.value);
-  // The nanny names sessions by their processes: none where the table is not read.
-  const chips = current.procsHere ? nannyStep(current, linux.value, verdicts) : {};
-  showAll(current, verdicts, chips);
+  showAll(current, verdicts, nannyStep(current, linux.value, verdicts));
 }
 
 async function learnWindows(current: State): Promise<void> {
@@ -365,15 +347,24 @@ async function learnWindows(current: State): Promise<void> {
 
 export function activate(api: ExtensionApi): () => void {
   const windows = windowsTools() ? new WindowsSampler(EVERY / 1000) : null;
+  const linux: LinuxRaw[] = [];
+  const wsl = HOST.native
+    ? new WslLinux({
+        spawn: spawnWslShell,
+        probe: probeWsl,
+        onRead: (raw) => keep(linux, raw, HOUR),
+      })
+    : null;
   const current: State = {
     api,
-    linux: [],
-    wsl: null,
-    procsHere: !HOST.native,
-    procs: [],
-    containers: [],
-    dockerInfos: new Map(),
-    dockerAt: 0,
+    linux,
+    wsl,
+    tables: new Tables({
+      wsl,
+      windows: windows !== null,
+      hostPid: process.pid,
+      log: (event, data) => api.log(event, data),
+    }),
     windows,
     info: null,
     topWindows: [],
@@ -388,13 +379,6 @@ export function activate(api: ExtensionApi): () => void {
     nannyUse: null,
     chipped: "",
   };
-  if (HOST.native) {
-    current.wsl = new WslLinux({
-      spawn: spawnWslShell,
-      probe: probeWsl,
-      onRead: (raw) => keep(current.linux, raw, HOUR),
-    });
-  }
   state = current;
   if (windows !== null) {
     windows.start();
@@ -406,6 +390,7 @@ export function activate(api: ExtensionApi): () => void {
     clearInterval(timer);
     windows?.stop();
     current.wsl?.stop();
+    current.tables.stop();
     stopPowershell();
     state = null;
   };
@@ -424,17 +409,34 @@ function linuxStatus(current: State, sample: LinuxSample | null) {
 }
 
 /**
- * prifly's processes, or null where the table is not read (yet, or on a host
- * on Windows): the page draws the prifly tab, and its WSL tiles, only from one.
+ * prifly's processes over the window: the report, null where the table is
+ * not read (yet, or while a host on Windows has no WSL to read) — the page
+ * draws the prifly tab, and its WSL tiles, only from one. A host on Windows
+ * itself is not in the table: its own Windows processes are `priflyWindows`,
+ * null elsewhere and before their first read, and the report counts them as
+ * the host's.
  */
-function reportOf(
-  current: State,
-  table: Proc[] | null,
-  sessions: ExtensionSession[],
-  containers: Container[],
-) {
-  if (table === null || !current.procsHere) return null;
-  return priflyReport(table, process.pid, sessions, new McpConfig(), containers);
+function priflyOf(current: State, seconds: number) {
+  const { tables } = current;
+  const procs = averageProcs(tables.procs, seconds);
+  const sessions = current.api.sessions();
+  const containers = averageContainers(tables.containers, seconds, tables.dockerInfos, (info) =>
+    ownerOf(info, sessions),
+  );
+  const windowsHost = tables.native
+    ? (averageProcs(tables.windowsHost, seconds)?.value ?? null)
+    : null;
+  const priflyWindows: Usage | null = windowsHost === null ? null : usageOf(windowsHost);
+  if (procs === null) return { procs, containers, report: null, priflyWindows };
+  const report = priflyReport(
+    procs.value,
+    tables.native ? null : process.pid,
+    sessions,
+    new McpConfig(),
+    containers,
+    windowsHost === null ? null : { procs: windowsHost, hostPid: process.pid },
+  );
+  return { procs, containers, report, priflyWindows };
 }
 
 /** Everything the page shows, each number averaged over the last `seconds`. */
@@ -442,15 +444,9 @@ function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
-  const procs = averageProcs(current.procs, seconds);
-  const table = procs?.value ?? [];
+  const { procs, containers, report, priflyWindows } = priflyOf(current, seconds);
   const linuxBlock = linuxStatus(current, linux?.value ?? null);
   const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
-  const sessions = current.api.sessions();
-  const containers = averageContainers(current.containers, seconds, current.dockerInfos, (info) =>
-    ownerOf(info, sessions),
-  );
-  const report = reportOf(current, procs?.value ?? null, sessions, containers);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {
@@ -460,8 +456,9 @@ function status(current: State, seconds: number) {
     ),
     gpu,
     ...linuxBlock,
-    // Why the prifly tab is empty: "" where this host's processes are read.
-    processes: current.procsHere ? "" : PROCS_ABSENT,
+    // Why the prifly tab is empty: "" wherever the process table is read, and on a
+    // host on Windows itself while WSL runs.
+    processes: current.wsl?.absent ?? "",
     windows:
       current.windows === null
         ? null
@@ -472,8 +469,10 @@ function status(current: State, seconds: number) {
             error: current.windows.error,
           },
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
-    top: { linux: topLinux(table, containers, report), windows: current.topWindows },
+    top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     prifly: report,
+    // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.
+    priflyWindows,
     cloud: current.cloud,
     window: seconds,
     // A window that has not filled yet says how much it has.
@@ -495,8 +494,7 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   current.askedWindow = seconds;
   // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
-    current.procs.length = 0;
-    current.containers.length = 0;
+    current.tables.clear();
     refreshWhileOpen(current);
   }
   return status(current, seconds);
