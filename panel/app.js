@@ -288,7 +288,7 @@ function drawSessions(report, state) {
 }
 
 function drawPrifly(state) {
-  // A host on Windows itself reads no process table: the tab says so instead.
+  // Where the process table is not read (a host on Windows while WSL is not running), the tab says why.
   const absent = state.processes ?? "";
   $("prifly-absent").hidden = absent === "";
   $("prifly-absent").textContent = absent;
