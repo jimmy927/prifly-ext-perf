@@ -7,7 +7,7 @@ import { $, bytes, cores, el } from "./format.js";
 const MIB = 2 ** 20;
 
 /** A segment wider than this share of its group carries its name and value. */
-const LABEL_FROM = 9;
+const LABEL_FROM = 5;
 
 /**
  * One resource over the machine. `win` is Windows' side as `{used, vm, prifly}`
@@ -42,7 +42,7 @@ function split(total, win, wsl, priflyKnown) {
 
 /** The CPU split: cores, by the hypervisor's count of the machine where Windows has one. */
 function cpuSplit(c, info, s, report, mine) {
-  const winCpu = ((c.machine ?? c.busy ?? 0) / 100) * info.cores;
+  const winCpu = Math.min(info.cores, ((c.machine ?? c.busy ?? 0) / 100) * info.cores);
   if (s === null)
     return split(info.cores, { used: winCpu, vm: 0, prifly: mine?.cpu ?? 0 }, null, true);
   const wslCpu = (s.busy / 100) * s.cores;
@@ -62,10 +62,15 @@ function cpuSplit(c, info, s, report, mine) {
   );
 }
 
-/** The memory split: bytes, the VM taking its whole size as far as Windows can tell. */
+/**
+ * The memory split: bytes. Windows counts the VM as used only as far as it holds
+ * it in RAM (its working set), not its whole size; where that counter is missing,
+ * what Linux uses in the VM stands in for it.
+ */
 function memorySplit(c, info, s, report, mine) {
   const winMem = Math.max(0, info.memTotal - (c.availableMB ?? 0) * MIB);
-  const win = { used: winMem, vm: s?.memTotal ?? 0, prifly: mine?.rss ?? 0 };
+  const vm = c.wslVmMem ?? (s === null ? 0 : s.memTotal - s.memAvailable);
+  const win = { used: winMem, vm, prifly: mine?.rss ?? 0 };
   const wsl =
     s === null
       ? null
@@ -76,6 +81,34 @@ function memorySplit(c, info, s, report, mine) {
           docker: report?.otherContainers.rss ?? 0,
         };
   return split(info.memTotal, win, wsl, report !== null);
+}
+
+/** At most this many programs are named in a group's "Other". */
+const NAMED = 5;
+
+/** A program is named only where it is at least this share of its group. */
+const NAMED_FROM = 0.02;
+
+/**
+ * Names the biggest programs in each group's "Other" (`others` by `key`, cores
+ * or bytes): each takes its part out of `other`, and `rest` is what is left.
+ * Counters read apart can name more than "Other" holds: capped in turn.
+ */
+function named(r, others, key) {
+  const name = (part, programs) => {
+    if (part === null) return;
+    part.named = [];
+    part.rest = part.other;
+    const sorted = [...programs].sort((a, b) => b[key] - a[key]);
+    for (const p of sorted.slice(0, NAMED)) {
+      const value = Math.min(p[key], part.rest);
+      if (!(value >= NAMED_FROM * part.width)) break;
+      part.named.push({ name: p.name, value });
+      part.rest -= value;
+    }
+  };
+  name(r.win, others.windows);
+  name(r.wsl, others.linux);
 }
 
 /**
@@ -92,11 +125,16 @@ export function whereModel(state) {
   const report = state.prifly;
   // prifly's own Windows processes, where the host reads them.
   const mine = state.priflyWindows ?? null;
+  const others = state.others ?? { linux: [], windows: [] };
+  const cpu = cpuSplit(counters, info, s, report, mine);
+  const memory = memorySplit(counters, info, s, report, mine);
+  named(cpu, others, "cpu");
+  named(memory, others, "rss");
   return {
     reading: false,
     info,
-    cpu: cpuSplit(counters, info, s, report, mine),
-    memory: memorySplit(counters, info, s, report, mine),
+    cpu,
+    memory,
     running: s !== null,
     known: report !== null,
   };
@@ -127,6 +165,10 @@ function group(kind, title, used, part, total, parts, format) {
   );
 }
 
+/** A group's named programs as segments, every other one a shade lighter to tell them apart. */
+const programs = (part) =>
+  part.named.map(({ name, value }, i) => [`k-prog${i % 2 === 1 ? " alt" : ""}`, name, value]);
+
 function row(label, r, format, known) {
   const prifly = r.win.prifly + (r.wsl?.prifly ?? 0);
   const free = r.win.free + (r.wsl?.free ?? 0);
@@ -139,7 +181,8 @@ function row(label, r, format, known) {
       r.total,
       [
         ["k-claude", "prifly", r.win.prifly],
-        ["k-other", "Other Windows", r.win.other],
+        ...programs(r.win),
+        ["k-other", "Other Windows", r.win.rest],
         ["k-free", "free", r.win.free],
       ],
       format,
@@ -156,7 +199,8 @@ function row(label, r, format, known) {
         [
           ["k-claude", "prifly sessions", r.wsl.prifly],
           ["k-docker", "Docker", r.wsl.docker],
-          ["k-other", known ? "Other WSL" : "In use", r.wsl.other],
+          ...programs(r.wsl),
+          ["k-other", known ? "Other WSL" : "In use", r.wsl.rest],
           ["k-vmfree", "free in VM", r.wsl.free],
         ],
         format,

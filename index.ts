@@ -39,6 +39,7 @@ import {
   usageOf,
 } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
+import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
 import { Tables } from "./tables";
 import {
@@ -427,7 +428,12 @@ function priflyOf(current: State, seconds: number) {
     ? (averageProcs(tables.windowsHost, seconds)?.value ?? null)
     : null;
   const priflyWindows: Usage | null = windowsHost === null ? null : usageOf(windowsHost);
-  if (procs === null) return { procs, containers, report: null, priflyWindows };
+  // What "Other" is made of in the Where it goes card; WSL's only once prifly's part is known.
+  const windows = windowsPrograms(current.topWindows, windowsHost ?? []);
+  if (procs === null) {
+    return { procs, containers, report: null, priflyWindows, others: { linux: [], windows } };
+  }
+  const counted = new Set<number>();
   const report = priflyReport(
     procs.value,
     tables.native ? null : process.pid,
@@ -435,8 +441,10 @@ function priflyOf(current: State, seconds: number) {
     new McpConfig(),
     containers,
     windowsHost === null ? null : { procs: windowsHost, hostPid: process.pid },
+    counted,
   );
-  return { procs, containers, report, priflyWindows };
+  const others = { linux: otherPrograms(procs.value, counted), windows };
+  return { procs, containers, report, priflyWindows, others };
 }
 
 /** Everything the page shows, each number averaged over the last `seconds`. */
@@ -444,7 +452,7 @@ function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
-  const { procs, containers, report, priflyWindows } = priflyOf(current, seconds);
+  const { procs, containers, report, priflyWindows, others } = priflyOf(current, seconds);
   const linuxBlock = linuxStatus(current, linux?.value ?? null);
   const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
   const gpu = current.gpu.status(current.windows);
@@ -470,6 +478,7 @@ function status(current: State, seconds: number) {
           },
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
+    others,
     prifly: report,
     // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.
     priflyWindows,

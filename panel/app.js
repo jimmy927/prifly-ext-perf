@@ -151,6 +151,7 @@ function drawTop(state) {
     ),
     ...state.top.windows
       .filter((p) => p.cpu >= 0.05)
+      .slice(0, 8)
       .map((p) => topRow("Windows", p.name, cores(p.cpu), bytes(p.memory), "")),
   ];
   const empty = el("tr", {}, el("td", { colspan: "5", class: "muted" }, "Nothing is busy."));

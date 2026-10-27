@@ -90,3 +90,11 @@ table.matrix a {
 table.matrix a:hover {
   text-decoration: underline;
 }
+/* A program named out of "Other": solid where "Other" is striped, in its colour. */
+.k-prog {
+  background: color-mix(in srgb, var(--k-relay) 80%, var(--muted));
+  box-shadow: inset -1px 0 0 var(--muted);
+}
+.k-prog.alt {
+  background: color-mix(in srgb, var(--k-relay) 60%, var(--muted));
+}

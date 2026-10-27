@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { McpConfig, marksOf, serverOf } from "../mcp";
 import { commandLabel, ownerIdsOf, ownersOf, priflyReport, toolUseOf } from "../prifly";
 import type { Proc } from "../procs";
+import { otherPrograms, windowsPrograms } from "../programs";
 
 const PLAYWRIGHT = {
   name: "playwright",
@@ -61,7 +62,12 @@ describe("prifly's processes", () => {
   const all = [host, worker, relay, claude, npm, node, shell, pytest, namer, stranger];
   const config = { forFolder: () => [PLAYWRIGHT] } as unknown as McpConfig;
   const known = [{ id: "aaaaaaaa-1111", title: "odi-11", cwd: "/w", state: "working" }];
-  const report = priflyReport(all, host.pid, known, config);
+  const counted = new Set<number>();
+  const report = priflyReport(all, host.pid, known, config, [], null, counted);
+
+  test("what prifly does not count is named by program", () => {
+    expect(otherPrograms(all, counted)).toEqual([{ name: "sshd", cpu: 0, rss: 2 ** 20 }]);
+  });
 
   test("each process is counted once, by kind", () => {
     expect(report.total.processes).toBe(9);
@@ -148,4 +154,19 @@ describe("prifly's processes", () => {
   test("a session with no tools is absent", () => {
     expect(toolUseOf([relay, claude], known, config).size).toBe(0);
   });
+});
+
+test("Windows' programs leave out the WSL VM and what prifly's own processes use", () => {
+  const top = [
+    { name: "vmmemwsl", cpu: 4, memory: 0 },
+    { name: "msedgewebview2", cpu: 1, memory: 3000 },
+    { name: "teams", cpu: 0.5, memory: 2000 },
+  ];
+  const mine = [
+    { ...proc(1, ["msedgewebview2.exe"], 0.25), comm: "msedgewebview2.exe", rss: 1000 },
+  ];
+  expect(windowsPrograms(top, mine)).toEqual([
+    { name: "msedgewebview2", cpu: 0.75, rss: 2000 },
+    { name: "teams", cpu: 0.5, rss: 2000 },
+  ]);
 });

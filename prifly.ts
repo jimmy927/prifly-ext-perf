@@ -87,7 +87,11 @@ function addContainer(into: Usage, container: Container): void {
   into.cpu += container.cpu;
 }
 
+/** While `priflyReport` reads WSL's table: the pids it counts, for `otherPrograms`. */
+let counting: Set<number> | null = null;
+
 function add(into: Usage, proc: Proc): void {
+  counting?.add(proc.pid);
   into.processes += 1;
   into.rss += proc.rss;
   into.cpu += proc.cpu;
@@ -403,7 +407,8 @@ export type WindowsHost = { procs: Proc[]; hostPid: number };
  * them: one a running session started counts as that session's, the rest are
  * `otherContainers`. `hostPid` is the host in `procs`; null where the host
  * is not in them (a host on Windows itself, whose own processes are
- * `windows`, counted as the host's by the same rules).
+ * `windows`, counted as the host's by the same rules). The pids of `procs`
+ * it counts go into `counted`.
  */
 export function priflyReport(
   procs: Proc[],
@@ -412,6 +417,23 @@ export function priflyReport(
   config: McpConfig,
   containers: Container[] = [],
   windows: WindowsHost | null = null,
+  counted: Set<number> = new Set(),
+): PriflyReport {
+  counting = counted;
+  try {
+    return readReport(procs, hostPid, known, config, containers, windows);
+  } finally {
+    counting = null;
+  }
+}
+
+function readReport(
+  procs: Proc[],
+  hostPid: number | null,
+  known: ExtensionSession[],
+  config: McpConfig,
+  containers: Container[],
+  windows: WindowsHost | null,
 ): PriflyReport {
   const tree = treeOf(procs);
   const kinds = noKinds();
@@ -431,7 +453,13 @@ export function priflyReport(
   }
   if (hostPid !== null) readHost(kinds, own, tree, hostPid);
   for (const agent of procs.filter(isAgentHost)) readHost(kinds, own, tree, agent.pid);
-  if (windows !== null) readHost(kinds, own, treeOf(windows.procs), windows.hostPid);
+  if (windows !== null) {
+    // Windows' pids are not WSL's: they stay out of `counted`.
+    const wsl = counting;
+    counting = null;
+    readHost(kinds, own, treeOf(windows.procs), windows.hostPid);
+    counting = wsl;
+  }
   httpServers(acc, sessions);
   const rows = new Map(sessions.map((row) => [row.id, row]));
   const otherContainers = empty();
