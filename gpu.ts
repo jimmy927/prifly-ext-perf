@@ -7,7 +7,8 @@
  * - Windows' counters (`windows.ts`) know each Windows process's share of the
  *   card, among them `vmwp`, the WSL VM, which holds everything WSL runs on it.
  * - prifly's host publishes what each of its GPU model workers holds
- *   (`gpu-holders.json`), which splits the VM's share. Those are estimates, so
+ *   (`gpu-holders.json`), which splits the VM's share, or, on a host that runs
+ *   on Windows itself, the workers' own Windows processes. Those are estimates, so
  *   which WSL processes have `/dev/dxg` open (`gpu-live.ts` scans `/proc`)
  *   says whether anything else can hold part of it.
  *
@@ -133,6 +134,8 @@ export type Shares = {
   vm: number;
   /** The rest of what is used: Windows programs not named, and what no counter owns. */
   other: number;
+  /** What prifly's workers that run on Windows itself hold, by pid, as counted: never scaled down. */
+  workers?: Map<number, number>;
 };
 
 /**
@@ -141,16 +144,33 @@ export type Shares = {
  * Windows programs' figures overlap (the desktop compositor counts memory its
  * clients also count), so they are scaled down until they fit in what the VM
  * leaves; the rest is `other`. A program with several processes (chrome) is
- * one share.
+ * one share. The pids in `workers`, prifly's model workers on a host that
+ * runs on Windows itself, are taken as they are too, each its own share, so
+ * that `rowsOf` can split them into their models.
  */
-export function shareOut(uses: GpuUse[], names: Map<number, string>, used: number): Shares {
+export function shareOut(
+  uses: GpuUse[],
+  names: Map<number, string>,
+  used: number,
+  workers: ReadonlySet<number> = new Set(),
+): Shares {
   const byName = new Map<string, number>();
+  const mine = new Map<number, number>();
   for (const use of uses) {
+    if (workers.has(use.pid)) {
+      mine.set(use.pid, (mine.get(use.pid) ?? 0) + use.mib);
+      continue;
+    }
     const name = names.get(use.pid) ?? `pid ${use.pid}`;
     byName.set(name, (byName.get(name) ?? 0) + use.mib);
   }
   const vm = Math.min(byName.get(WSL_VM) ?? 0, used);
-  const room = used - vm;
+  let left = used - vm;
+  for (const [pid, mib] of mine) {
+    mine.set(pid, Math.min(mib, left));
+    left -= mine.get(pid) ?? 0;
+  }
+  const room = left;
   const sum = [...byName].reduce((a, [name, mib]) => (name === WSL_VM ? a : a + mib), 0);
   const scale = sum > room && sum > 0 ? room / sum : 1;
   const named = [...byName]
@@ -160,7 +180,7 @@ export function shareOut(uses: GpuUse[], names: Map<number, string>, used: numbe
     .sort((a, b) => b.mib - a.mib)
     .slice(0, NAMED_WINDOWS);
   const shown = named.reduce((a, b) => a + b.mib, 0);
-  return { named, vm, other: Math.max(0, used - vm - shown) };
+  return { named, vm, other: Math.max(0, room - shown), workers: mine };
 }
 
 /** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
@@ -403,12 +423,28 @@ export function knownWindows(process: string): Known {
   return KNOWN_WINDOWS[process.toLowerCase()] ?? { name: process, what: "" };
 }
 
+/**
+ * prifly's workers that run on Windows itself, a row per model: each worker
+ * process's counted figure is all its holders', split by their estimates.
+ */
+function workerRows(workers: Map<number, number>, holders: Holder[]): GpuRow[] {
+  return [...workers].flatMap(([pid, mib]) => {
+    const rows = holderRows(holders.filter((h) => h.pid === pid));
+    const sum = rows.reduce((a, r) => a + r.mib, 0);
+    for (const row of rows) row.mib = sum > 0 ? (row.mib * mib) / sum : mib / rows.length;
+    return rows;
+  });
+}
+
 /** The card as the table lists it: prifly and WSL first, then Windows, biggest first. */
 export function rowsOf(
   shares: Shares,
   holders: Holder[] | null,
   dxg: DxgProcess[] | null = null,
 ): GpuRow[] {
+  const workers = shares.workers ?? new Map<number, number>();
+  // Holders whose process Windows counts itself are not in the VM's share.
+  const inVm = holders?.filter((h) => !workers.has(h.pid)) ?? null;
   const windows: GpuRow[] = shares.named.map((share, i) => {
     const known = knownWindows(share.name);
     return {
@@ -428,5 +464,5 @@ export function rowsOf(
       mib: shares.other,
     });
   }
-  return [...vmRows(shares.vm, holders, dxg), ...windows];
+  return [...workerRows(workers, holders ?? []), ...vmRows(shares.vm, inVm, dxg), ...windows];
 }

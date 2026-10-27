@@ -1,11 +1,12 @@
 /**
  * Reads the graphics card for the Machine tab, only while the window is open:
  * `nvidia-smi` every 5 s, Windows' per-process counters every 10 s, and
- * prifly's `gpu-holders.json` each time the page asks. The sums are in `gpu.ts`.
+ * prifly's `gpu-holders.json` each time the page asks, from a host in WSL or
+ * on Windows (`holdersPlaces`). The sums are in `gpu.ts`.
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,35 @@ const PROCESSES_EVERY = 10_000;
 const SMI = ["nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"];
 const QUERY = ["--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"];
 
-export const HOLDERS_FILE = join(homedir(), ".local", "share", "prifly", "gpu-holders.json");
+/** Where a host publishes `gpu-holders.json`, and whether its pids are Windows' (a host on Windows itself). */
+export type HoldersPlace = { path: string; windows: boolean };
+
+const HOLDERS_NAME = "gpu-holders.json";
+
+/**
+ * Where prifly's hosts publish their holders: a host in WSL in
+ * `~/.local/share/prifly`, a host on Windows in `%LOCALAPPDATA%\prifly\host`,
+ * found from WSL under each `/mnt/c/Users/<user>`. The WSL host's file comes first.
+ */
+export function holdersPlaces(): HoldersPlace[] {
+  if (HOST.native) {
+    const local = process.env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local");
+    return [{ path: join(local, "prifly", "host", HOLDERS_NAME), windows: true }];
+  }
+  let users: string[] = [];
+  try {
+    users = readdirSync("/mnt/c/Users");
+  } catch {
+    // No Windows around this Linux.
+  }
+  return [
+    { path: join(homedir(), ".local", "share", "prifly", HOLDERS_NAME), windows: false },
+    ...users.map((user) => ({
+      path: join("/mnt/c/Users", user, "AppData", "Local", "prifly", "host", HOLDERS_NAME),
+      windows: true,
+    })),
+  ];
+}
 
 /** What `api/status` carries: loading until the first read; null (no block) where there is no card. */
 export type GpuStatus =
@@ -114,19 +143,34 @@ export async function scanDxg(proc = "/proc"): Promise<DxgProcess[] | null> {
   return found.flatMap((p) => (p === null ? [] : [p]));
 }
 
-/** The holders file's say: who holds the card, and the free memory grey words start at. */
-function holdersFile(path: string) {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return { holders: null, greyNeeds: GREY_NEEDS_MIB };
-  }
+/**
+ * The holders files' say: who holds the card, whether those are Windows
+ * processes, and the free memory grey words start at. The first place with a
+ * live holder wins. A Windows pid is alive while Windows lists it (`names`,
+ * from its counters); before those are read, the file's freshness has to do.
+ */
+function holdersFile(places: HoldersPlace[], names: Map<number, string> | null) {
   const now = Date.now();
-  return {
-    holders: readHolders(text, now, alive),
-    greyNeeds: readGreyNeeds(text, now) ?? GREY_NEEDS_MIB,
-  };
+  const windowsAlive = (pid: number) => (names === null ? true : names.has(pid));
+  let greyNeeds: number | null = null;
+  for (const place of places) {
+    let text: string;
+    try {
+      text = readFileSync(place.path, "utf8");
+    } catch {
+      continue;
+    }
+    greyNeeds ??= readGreyNeeds(text, now);
+    const holders = readHolders(text, now, place.windows ? windowsAlive : alive);
+    if (holders !== null) {
+      return {
+        holders,
+        windows: place.windows,
+        greyNeeds: readGreyNeeds(text, now) ?? GREY_NEEDS_MIB,
+      };
+    }
+  }
+  return { holders: null, windows: false, greyNeeds: greyNeeds ?? GREY_NEEDS_MIB };
 }
 
 export class GpuMonitor {
@@ -140,7 +184,7 @@ export class GpuMonitor {
   private dxgAt = 0;
   private scanning = false;
   private readonly scan: () => Promise<DxgProcess[] | null>;
-  private readonly holdersPath: string;
+  private readonly holdersPlaces: HoldersPlace[];
   private readonly log: (
     event: string,
     data: Record<string, string | number | boolean | null>,
@@ -148,12 +192,12 @@ export class GpuMonitor {
 
   constructor(
     log: (event: string, data: Record<string, string | number | boolean | null>) => void,
-    holdersPath = HOLDERS_FILE,
+    places = holdersPlaces(),
     scan: () => Promise<DxgProcess[] | null> = scanDxg,
   ) {
     this.log = log;
     this.scan = scan;
-    this.holdersPath = holdersPath;
+    this.holdersPlaces = places;
   }
 
   /** Asks again for what is due; never waits. */
@@ -200,7 +244,7 @@ export class GpuMonitor {
     const card = this.card;
     if (card === null) return null;
     // The file does not depend on Windows' counters: grey is known without them.
-    const file = holdersFile(this.holdersPath);
+    const file = holdersFile(this.holdersPlaces, this.processes?.names ?? null);
     const grey = greyState(file.holders, card.free, file.greyNeeds);
     const base = { loading: false as const, ...card, greyNeeds: file.greyNeeds, grey };
     const unknown = (why: string): GpuStatus => ({ ...base, holders: [], unknown: why });
@@ -211,7 +255,9 @@ export class GpuMonitor {
       return unknown("Windows' counters could not be read.");
     if (this.processes === null) return unknown("still reading Windows' counters…");
     const uses = this.processes.uses.filter((use) => use.luid === luid);
-    const shares = shareOut(uses, this.processes.names, used);
+    // Workers of a host on Windows are Windows processes of their own, not in the VM's share.
+    const workers = new Set(file.windows ? (file.holders ?? []).map((h) => h.pid) : []);
+    const shares = shareOut(uses, this.processes.names, used, workers);
     return { ...base, holders: rowsOf(shares, file.holders, this.dxg), unknown: "" };
   }
 }
