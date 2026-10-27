@@ -153,7 +153,8 @@ describe("WindowsSampler", () => {
     await first?.finish();
     await second?.samples(102, 1);
     expect(sampler.history.length).toBe(RUN + 1);
-    expect(sampler.latest?.busy).toBe(102);
+    // Not `busy`: a share past 100 is dropped.
+    expect(sampler.latest?.wslVm).toBe(102);
     sampler.stop();
   });
 

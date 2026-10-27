@@ -78,6 +78,7 @@ describe("Windows", () => {
     diskRead: 0,
     diskWrite: 0,
     machine: 32,
+    wslVmMem: null,
     wslVm: 100,
   } satisfies WindowsCounters;
 

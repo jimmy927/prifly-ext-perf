@@ -40,10 +40,26 @@ export const COUNTERS = {
   // on it — Windows, the WSL VM, the hypervisor. Windows itself runs on
   // virtual processors once Hyper-V is up, so only this sees the whole machine.
   machine: "\\Hyper-V Hypervisor Logical Processor(_Total)\\% Total Run Time",
+  // Bytes of the WSL VM that Windows holds in RAM: what it counts as used for
+  // the VM, often far below the VM's size, which is only a ceiling.
+  wslVmMem: "\\Process(vmmemwsl)\\Working Set",
   // Summed over cores: 100 is one core.
   wslVm: "\\Process(vmmemwsl)\\% Processor Time",
 } as const;
 export type Field = keyof typeof COUNTERS;
+
+/**
+ * The counters that are a share of one whole, 0–100. Such a counter can read
+ * millions for one line (after sleep, or when a counter restarts), and one
+ * such line made the panel's mean over a minute 666,000 cores: it is dropped.
+ */
+const SHARES: ReadonlySet<Field> = new Set([
+  "busy",
+  "committed",
+  "pageFile",
+  "diskIdle",
+  "machine",
+]);
 
 /** One line of counters; a counter Windows could not read is null. */
 export type WindowsCounters = { at: number } & Record<Field, number | null>;
@@ -98,14 +114,23 @@ export function parseRow(header: string, line: string, at: number): WindowsCount
   const names = cells(header);
   const values = cells(line);
   if (values.length < 2 || Number.isNaN(Date.parse(values[0] ?? ""))) return null;
+  // A line with more or fewer values than the header has columns (an adapter of
+  // `GPU_ADAPTER` come or gone) would put each value under a neighbour's name.
+  if (values.length !== names.length) return null;
   const row = { at } as WindowsCounters;
   for (const [field, path] of Object.entries(COUNTERS) as [Field, string][]) {
     const column = names.findIndex((name) => name.toLowerCase().endsWith(path.toLowerCase()));
     const raw = column < 0 ? undefined : values[column];
-    const value = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw);
-    row[field] = Number.isFinite(value) && value >= 0 ? value : null;
+    row[field] = possible(field, raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw));
   }
   return row;
+}
+
+/** A counter's value, or null where it cannot be: negative, or a share past 100 (a hair over is rounding). */
+function possible(field: Field, value: number): number | null {
+  if (!Number.isFinite(value) || value < 0) return null;
+  if (!SHARES.has(field)) return value;
+  return value > 101 ? null : Math.min(value, 100);
 }
 
 /** The parts of a started `typeperf` the sampler uses; tests give it a fake. */
@@ -495,5 +520,5 @@ export function sumByName(out: string): WindowsProcess[] {
     else entry.memory += Number(value);
     byName.set(name, entry);
   }
-  return [...byName.values()].sort((a, b) => b.cpu - a.cpu).slice(0, 8);
+  return [...byName.values()].sort((a, b) => b.cpu - a.cpu);
 }

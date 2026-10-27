@@ -58,6 +58,13 @@ describe("Windows counters", () => {
     expect(row?.queue).toBeNull();
   });
 
+  test("a share past 100 % is dropped, not averaged in", () => {
+    const values = paths.map((p) => (p === COUNTERS.machine ? '"4167323.5"' : '"50"'));
+    const row = parseRow(header, `"10/01/2026 11:01:33.105",${values.join(",")}`, 0);
+    expect(row?.machine).toBeNull();
+    expect(row?.wslVm).toBe(50);
+  });
+
   test("typeperf's closing words are no row", () => {
     expect(parseRow(header, "Exiting, please wait...", 0)).toBeNull();
   });
