@@ -1,0 +1,36 @@
+/* The "Who holds Windows' memory" card (holders.js). */
+#holders {
+  margin-top: 14px;
+}
+table.holders tr.holder {
+  cursor: pointer;
+}
+table.holders tr.holder:hover td {
+  background: var(--accent);
+}
+table.holders .caret {
+  display: inline-block;
+  width: 14px;
+  color: var(--muted-fg);
+}
+table.holders tr.held td {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 12px;
+}
+table.holders tr.held td:first-child {
+  padding-left: 34px;
+}
+table.holders tr.unheld td {
+  color: var(--muted-fg);
+}
+table.holders tr.unheld small {
+  display: block;
+  font-size: 11.5px;
+}
+table.holders td.none {
+  color: var(--muted-fg);
+}
+table.holders .bars {
+  width: 80px;
+}

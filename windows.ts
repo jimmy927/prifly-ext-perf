@@ -3,7 +3,8 @@
  * where the tools are): one `typeperf.exe` at a time, always running, that
  * prints the counters below every second as CSV — about two seconds to start,
  * where a PowerShell per poll would cost that every time. Which processes use the CPU
- * comes from one PowerShell that stays running too (`topProcesses`), and so,
+ * comes from one PowerShell that stays running too (`topProcesses` in
+ * `windows-top.ts`), and so,
  * on a host on Windows itself, do the host's own processes (`hostTreeOf`).
  *
  * On a Linux with no Windows around it there is no Windows to read:
@@ -126,12 +127,6 @@ export function parseGpuAdapters(header: string, line: string): Map<string, numb
 }
 
 export type WindowsInfo = { name: string; cores: number; memTotal: number };
-
-/** A program's processes added up: cores busy, of them cores in the kernel, and private memory. */
-export type WindowsProcess = { name: string; cpu: number; kernel: number; memory: number };
-
-/** `topProcesses`' answer: the processes, and the compression store's size in bytes, null where it was not read. */
-export type WindowsTop = { processes: WindowsProcess[]; compressed: number | null };
 
 export function windowsTools(): boolean {
   return existsSync(TYPEPERF) && existsSync(POWERSHELL);
@@ -432,32 +427,6 @@ export async function windowsInfo(): Promise<WindowsInfo> {
 }
 
 /**
- * What uses Windows' CPU now: every process's CPU over two seconds, in cores,
- * of it the kernel's, with its private memory. Instances of one program (#1,
- * #2) are added up. And the memory compression store's size: the working set
- * of the `Memory Compression` process, which the Process counters leave out.
- */
-export async function topProcesses(): Promise<WindowsTop> {
-  const out = await powershell(
-    // A process that ends mid-sample makes Get-Counter say "data in one of the
-    // performance counter samples is not valid" and still return the rest:
-    // silenced, so it is not taken for a failure.
-    "(Get-Counter '\\Process(*)\\% Processor Time','\\Process(*)\\% Privileged Time','\\Process(*)\\Working Set - Private' -SampleInterval 2 -MaxSamples 1 -ErrorAction SilentlyContinue).CounterSamples | " +
-      // Invariant culture: a Swedish Windows writes 12,5 otherwise.
-      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}', $_.InstanceName, $_.Path.Split('\\')[-1], $_.CookedValue) }; " +
-      "Get-Process -Name 'Memory Compression' -ErrorAction SilentlyContinue | % { 'compression|' + $_.WorkingSet64 }",
-    20_000,
-  );
-  return { processes: sumByName(out), compressed: compressionOf(out) };
-}
-
-/** The compression store's bytes from `topProcesses`' `compression|<bytes>` line; null without one. */
-export function compressionOf(out: string): number | null {
-  const digits = /^compression\|(\d+)\s*$/m.exec(out)?.[1];
-  return digits === undefined ? null : Number(digits);
-}
-
-/**
  * Graphics memory by process: every `GPU Process Memory` instance's dedicated
  * usage (`G|pid_13644_luid_…_phys_0|bytes`) and total committed (`C|…|bytes`),
  * and every process's name (`P|pid|name`), for `parseGpuProcesses` (`gpu.ts`).
@@ -473,30 +442,35 @@ export function gpuProcessCounters(): Promise<string> {
 
 /**
  * Every Windows process, one line each:
- * `pid|parent pid|created (ticks)|name|kernel+user time (100 ns)|working set|read|written|command line`,
- * for `hostTreeOf`. The command line goes last, as it may hold a `|`.
+ * `pid|parent pid|created (ticks)|name|kernel+user time (100 ns)|working set|read|written|commit|command line`.
+ * The command line goes last, as it may hold a `|`. Commit is the process's
+ * private bytes (`PrivateMemorySize64`, Task Manager's "Commit size"), from
+ * `Get-Process` by pid: empty for a process that ended between the two.
  */
+export const PROCESS_LIST =
+  "$commit = @{}; foreach ($p in Get-Process) { $commit[[int]$p.Id] = $p.PrivateMemorySize64 }; " +
+  "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,Name,KernelModeTime,UserModeTime,WorkingSetSize,ReadTransferCount,WriteTransferCount,CommandLine | " +
+  "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}', " +
+  "$_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.Ticks } else { 0 }), $_.Name, " +
+  "$_.KernelModeTime + $_.UserModeTime, $_.WorkingSetSize, $_.ReadTransferCount, $_.WriteTransferCount, " +
+  "$commit[[int]$_.ProcessId], ($_.CommandLine -replace '[\\r\\n]+', ' ')) }";
+
+/** Every Windows process (`PROCESS_LIST`), for `hostTreeOf`. */
 export function windowsProcessList(): Promise<string> {
-  return powershell(
-    "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,Name,KernelModeTime,UserModeTime,WorkingSetSize,ReadTransferCount,WriteTransferCount,CommandLine | " +
-      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}', " +
-      "$_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.Ticks } else { 0 }), $_.Name, " +
-      "$_.KernelModeTime + $_.UserModeTime, $_.WorkingSetSize, $_.ReadTransferCount, $_.WriteTransferCount, " +
-      "($_.CommandLine -replace '[\\r\\n]+', ' ')) }",
-    20_000,
-  );
+  return powershell(PROCESS_LIST, 20_000);
 }
 
-type WindowsRow = ProcReading & { created: number };
+/** A process of `PROCESS_LIST`: a reading, when it started, and its commit in bytes. */
+export type WindowsRow = ProcReading & { created: number; commit: number };
 
-/** One line of `windowsProcessList`; null for a line that is not one. A field Windows left empty is 0. */
+/** One line of `PROCESS_LIST`; null for a line that is not one. A field Windows left empty is 0. */
 function windowsRowOf(line: string): WindowsRow | null {
   const cells = line.split("|");
-  if (cells.length < 9 || !/^\d+$/.test(cells[0] ?? "")) return null;
-  const [pid, ppid, created, , time, workingSet, read, write] = cells.map(
+  if (cells.length < 10 || !/^\d+$/.test(cells[0] ?? "")) return null;
+  const [pid, ppid, created, , time, workingSet, read, write, commit] = cells.map(
     (cell) => Number(cell) || 0,
   );
-  const command = cells.slice(8).join("|").trim();
+  const command = cells.slice(9).join("|").trim();
   return {
     pid: pid ?? 0,
     ppid: ppid ?? 0,
@@ -507,6 +481,7 @@ function windowsRowOf(line: string): WindowsRow | null {
     read: read ?? 0,
     write: write ?? 0,
     created: created ?? 0,
+    commit: commit ?? 0,
   };
 }
 
@@ -515,11 +490,27 @@ export function splitCommandLine(line: string): string[] {
   return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? "");
 }
 
-/** Each process's children, by its pid; the idle process, its own parent, is no one's child. */
-function childrenOf(rows: Iterable<WindowsRow>): Map<number, WindowsRow[]> {
+/** Every process of `PROCESS_LIST`'s output, by pid. */
+export function windowsRowsOf(out: string): Map<number, WindowsRow> {
+  const rows = new Map<number, WindowsRow>();
+  for (const line of out.split(/\r?\n/)) {
+    const row = windowsRowOf(line);
+    if (row !== null) rows.set(row.pid, row);
+  }
+  return rows;
+}
+
+/**
+ * Each process's children, by its pid. The idle process, its own parent, is
+ * no one's child, and nor is a process that started before its parent:
+ * Windows reuses a dead parent's pid, so that one is someone else.
+ */
+export function childrenOf(rows: Map<number, WindowsRow>): Map<number, WindowsRow[]> {
   const children = new Map<number, WindowsRow[]>();
-  for (const row of rows) {
+  for (const row of rows.values()) {
     if (row.pid === row.ppid) continue;
+    const parent = rows.get(row.ppid);
+    if (parent !== undefined && row.created < parent.created) continue;
     const list = children.get(row.ppid) ?? [];
     list.push(row);
     children.set(row.ppid, list);
@@ -536,38 +527,18 @@ function childrenOf(rows: Iterable<WindowsRow>): Map<number, WindowsRow[]> {
  * did not is someone else's. Empty when the host is not in the list.
  */
 export function hostTreeOf(out: string, hostPid: number, at: number): ProcSnapshot {
-  const rows = new Map<number, WindowsRow>();
-  for (const line of out.split(/\r?\n/)) {
-    const row = windowsRowOf(line);
-    if (row !== null) rows.set(row.pid, row);
-  }
+  const rows = windowsRowsOf(out);
   const procs = new Map<number, ProcReading>();
   const host = rows.get(hostPid);
   if (host === undefined) return { at, procs };
-  const children = childrenOf(rows.values());
+  const children = childrenOf(rows);
   const stack = [host];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    const { created: _created, ...reading } = next;
+    const { created: _created, commit: _commit, ...reading } = next;
     procs.set(next.pid, reading);
     for (const child of children.get(next.pid) ?? []) {
-      if (child.created >= next.created && !procs.has(child.pid)) stack.push(child);
+      if (!procs.has(child.pid)) stack.push(child);
     }
   }
   return { at, procs };
-}
-
-export function sumByName(out: string): WindowsProcess[] {
-  const byName = new Map<string, WindowsProcess>();
-  for (const line of out.split(/\r?\n/)) {
-    const [instance, counter, value] = line.split("|");
-    if (instance === undefined || counter === undefined || value === undefined) continue;
-    const name = instance.replace(/#\d+$/, "");
-    if (name === "_total" || name === "idle") continue;
-    const entry = byName.get(name) ?? { name, cpu: 0, kernel: 0, memory: 0 };
-    if (counter.startsWith("% processor")) entry.cpu += Number(value) / 100;
-    else if (counter.startsWith("% privileged")) entry.kernel += Number(value) / 100;
-    else entry.memory += Number(value);
-    byName.set(name, entry);
-  }
-  return [...byName.values()].sort((a, b) => b.cpu - a.cpu);
 }

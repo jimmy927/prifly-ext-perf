@@ -69,13 +69,54 @@ the VM's size for memory, what WSL uses for CPU. The VM's share of what Windows
 counts as used is taken out of Windows' side, so nothing is counted twice. The
 table under the bars gives the same as cores and memory for prifly and for
 everything else, by Windows, WSL and the machine, with a link to the prifly tab.
+The biggest programs are named in each Other; the memory bar is RAM, so a
+Windows program's segment is what it holds in RAM, and its tooltip adds what
+its processes have committed.
 It is left out on a Linux host with no Windows, and WSL reads "not running" when
 the VM is down.
 
 ### Busiest processes
 
 **What uses the CPU now** lists the busiest processes on both sides. A WSL
-process that belongs to a prifly session is named with that session.
+process that belongs to a prifly session is named with that session. A Windows
+program's memory is its commit ("2.8 GB committed", what it is in RAM in the
+tooltip), for the reason the next section gives.
+
+### Who holds Windows' memory
+
+Under it, on a machine with Windows, one row per kind of Windows process, by
+**commit** — its private bytes, Task Manager's "Commit size" — with what is in
+RAM (its working set) beside it, largest commit first: the WSL VM, Claude
+sessions (`claude.exe` and what each runs), the prifly host, its dictation
+workers and its intent model, prifly's agent and relays, test runs (`bun test`,
+`npm test`, `node --test`, vitest, jest, under the host, the agent or a
+session), prifly's window, Chrome, other WebView2, Docker Desktop, and the
+other programs by name, eight of them, the rest in one row. A process counts
+with its parent's kind unless it is one itself. Clicking a row lists its
+processes (twelve, with how many more).
+
+Why commit and not RAM: Task Manager's Memory column, and Windows' `Working Set
+- Private`, show only what is in RAM, and Windows trims a busy machine's
+processes out of RAM (to the standby list or the compression store) while
+their memory stays committed. Trimmed processes look small: on 2026-10-29
+`bun` had 13 GB committed and 3.3 GB in RAM. What is committed is what RAM
+and the page file must back between them, wherever it is now.
+
+Two rows are held by no process: **Kernel pools**, Windows' own paged and
+non-paged pool, and **Shared sections, page tables and the rest**, what is
+committed less every process's commit and the pools (never below 0): shared
+memory such as file mappings, the page tables, and drivers' allocations. On
+2026-10-29, of 72 GB committed, the pools were about 6.4 GB and the rest about
+7 GB.
+
+The host's processes, its helpers and its window are told apart only on a host
+on Windows itself (its own pid is Windows'); the window is a WebView2 under the
+host, or the installed app from `%LOCALAPPDATA%\sh.prifly.app` (its launcher,
+its `bun` and its `bun Helper` renderers). Without WSL there is no WSL VM row.
+A process that ended between the reads counts what Windows still gave for it.
+When the process list cannot be read the card says so, with Windows' words;
+without the memory counters the two rows held by no process are left out. A
+Linux host with no Windows has no such card.
 
 ![The Machine tab, dark](screenshots/machine-dark.png)
 
@@ -253,10 +294,13 @@ you are.
   package or script each one runs. `npx -y @playwright/mcp` runs as `npm exec
   @playwright/mcp`, so the launcher alone tells nothing. A process that looks
   like an MCP server but is in no config read here shows as *unlisted*.
-- **Windows' busiest processes**, with their kernel time, and the memory
+- **Windows' busiest processes**, with their kernel time, the memory
   compression store's size (the `Memory Compression` process's working set,
-  which the Process counters leave out), both from the shared PowerShell
-  every 10 s, and **cloud
+  which the Process counters leave out), and **who holds Windows' memory**
+  (every process from `Win32_Process` with its parent, command line and
+  working set, its commit from `Get-Process`'s `PrivateMemorySize64`, and the
+  committed bytes and the two pools from `Win32_PerfFormattedData_PerfOS_Memory`),
+  all from one script in the shared PowerShell every 10 s, and **cloud
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 
@@ -298,7 +342,8 @@ prifly tab says why, and the table and containers kept so far are dropped.
 The host's own Windows processes — the host, and everything under it by parent
 pid: dictation's and the intent model's workers, the WebView2 window, its own
 short `claude` calls — come from the shared PowerShell (`Win32_Process`, every
-2 s while the window is open). They count in the prifly tab as the host's, its
+2 s while the window is open; the same list, with each process's commit, as the
+one **Who holds Windows' memory** reads every 10 s). They count in the prifly tab as the host's, its
 dictation's and its intent model's, as on Linux, and the page's status has
 them apart as `priflyWindows`. Their read and write are all I/O, as Windows
 counts it, not disk alone. A process whose parent pid is the host's but that

@@ -151,7 +151,7 @@ export function gateSessionPrefix(runner: Proc): string | null {
   }
   return null;
 }
-const isClaude = (proc: Proc) =>
+export const isClaude = (proc: Pick<Proc, "comm" | "argv">) =>
   proc.comm === "claude" || basename(proc.argv[0] ?? "") === "claude";
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 
@@ -356,7 +356,7 @@ function countGate(
  * Which of the host's own helpers a child of it is, by the script it runs;
  * on Windows the path has backslashes and the script may be built (`.js`).
  */
-function helperOf(child: Proc): Own {
+export function helperOf(child: Pick<Proc, "argv">): Own {
   const args = child.argv.map((arg) => arg.replace(/\\/g, "/"));
   if (args.some((arg) => /\/dictation\/[\w-]+-worker\.[jt]s$/.test(arg))) return "dictation";
   if (args.some((arg) => /intent-model\/worker\.[jt]s$/.test(arg))) return "intent";

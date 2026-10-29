@@ -158,15 +158,16 @@ describe("prifly's processes", () => {
 
 test("Windows' programs leave out the WSL VM and what prifly's own processes use", () => {
   const top = [
-    { name: "vmmemwsl", cpu: 4, memory: 0 },
-    { name: "msedgewebview2", cpu: 1, memory: 3000 },
-    { name: "teams", cpu: 0.5, memory: 2000 },
+    { name: "vmmemwsl", cpu: 4, ram: 0, commit: 9000 },
+    { name: "msedgewebview2", cpu: 1, ram: 3000, commit: 5000 },
+    { name: "teams", cpu: 0.5, ram: 2000, commit: 2500 },
   ];
   const mine = [
     { ...proc(1, ["msedgewebview2.exe"], 0.25), comm: "msedgewebview2.exe", rss: 1000 },
   ];
+  // Their RAM, less prifly's own; their commit as Windows counts it, for the card to say.
   expect(windowsPrograms(top, mine)).toEqual([
-    { name: "msedgewebview2", cpu: 0.75, rss: 2000 },
-    { name: "teams", cpu: 0.5, rss: 2000 },
+    { name: "msedgewebview2", cpu: 0.75, rss: 2000, commit: 5000 },
+    { name: "teams", cpu: 0.5, rss: 2000, commit: 2500 },
   ]);
 });

@@ -3,8 +3,11 @@
 
 import type { Proc } from "./procs";
 
-/** A program outside prifly, its processes added up: cores and resident memory. */
-export type Program = { name: string; cpu: number; rss: number };
+/**
+ * A program outside prifly, its processes added up: cores and resident memory,
+ * and on Windows its commit (`windowsPrograms`).
+ */
+export type Program = { name: string; cpu: number; rss: number; commit?: number };
 
 /** How many programs `otherPrograms` keeps by each of CPU and memory. */
 const PROGRAMS = 8;
@@ -36,12 +39,14 @@ export function otherPrograms(procs: Proc[], counted: Set<number>): Program[] {
 /**
  * What uses Windows besides prifly and the WSL VM, by program: Windows' own
  * count of each (`topProcesses`), less what prifly's own Windows processes
- * (`mine`) use under the same name.
+ * (`mine`) use under the same name. Its memory is its working set, what it
+ * holds in RAM, as the card's bar is RAM; `commit` is all its processes'
+ * commit, prifly's included, for the card to say beside it.
  */
 export function windowsPrograms(
-  top: { name: string; cpu: number; memory: number }[],
+  top: { name: string; cpu: number; ram: number; commit: number }[],
   mine: Proc[],
-) {
+): Program[] {
   const ours = new Map<string, Program>();
   for (const proc of mine) {
     const name = proc.comm.toLowerCase().replace(/\.exe$/, "");
@@ -55,7 +60,8 @@ export function windowsPrograms(
     .map((p) => ({
       name: p.name,
       cpu: Math.max(0, p.cpu - (ours.get(p.name)?.cpu ?? 0)),
-      rss: Math.max(0, p.memory - (ours.get(p.name)?.rss ?? 0)),
+      rss: Math.max(0, p.ram - (ours.get(p.name)?.rss ?? 0)),
+      commit: p.commit,
     }));
   return biggest(programs);
 }

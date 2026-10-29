@@ -7,6 +7,7 @@ import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
 import { $, bytes, cores, el, pct, perSecond, programName, rate, spark } from "./format.js";
 import { gpuCard } from "./gpu.js";
+import { drawHolders } from "./holders.js";
 import { drawMcp } from "./mcp.js";
 import { drawWhere, segment } from "./where.js";
 
@@ -202,10 +203,19 @@ function drawTop(state) {
         rate(p.disk),
       ),
     ),
+    // A Windows process's memory is its commit, in RAM or trimmed out of it (`holders.js` says why).
     ...state.top.windows
       .filter((p) => p.cpu >= 0.05)
       .slice(0, 8)
-      .map((p) => topRow("Windows", p.name, cores(p.cpu), bytes(p.memory), "")),
+      .map((p) =>
+        topRow(
+          "Windows",
+          p.name,
+          cores(p.cpu),
+          el("span", { title: `${bytes(p.ram)} in RAM` }, `${bytes(p.commit)} committed`),
+          "",
+        ),
+      ),
   ];
   const empty = el("tr", {}, el("td", { colspan: "5", class: "muted" }, "Nothing is busy."));
   $("top").replaceChildren(...(rows.length > 0 ? rows : [empty]));
@@ -223,6 +233,7 @@ function drawMachine(state) {
   const gpu = gpuCard(state.gpu);
   if (gpu !== null) $("hosts").after(Object.assign(gpu, { id: "gpu" }));
   drawTop(state);
+  drawHolders(state);
 }
 
 function tile(key, value, detail, tone = "") {

@@ -103,7 +103,11 @@ function named(r, others, key) {
     for (const p of sorted.slice(0, NAMED)) {
       const value = Math.min(p[key], part.rest);
       if (!(value >= NAMED_FROM * part.width)) break;
-      part.named.push({ name: p.name, value });
+      // A Windows program's memory is its RAM, as the bar is; its commit goes in the tooltip.
+      const commit = key === "rss" ? p.commit : undefined;
+      part.named.push(
+        commit === undefined ? { name: p.name, value } : { name: p.name, value, commit },
+      );
       part.rest -= value;
     }
   };
@@ -140,13 +144,16 @@ export function whereModel(state) {
   };
 }
 
-/** One bar's segment: `value` as its share of the group's `whole`; nothing where it is zero. */
-export function segment(colour, name, value, whole, format) {
+/**
+ * One bar's segment: `value` as its share of the group's `whole`; nothing where
+ * it is zero. Its tooltip is `title`, or its name and value.
+ */
+export function segment(colour, name, value, whole, format, title) {
   if (!(value > 0) || !(whole > 0)) return null;
   const node = el("div", {
     class: `seg ${colour}`,
     style: `width:${(100 * value) / whole}%`,
-    title: `${name}: ${format(value)}`,
+    title: title ?? `${name}: ${format(value)}`,
   });
   if ((100 * value) / whole > LABEL_FROM) node.append(el("span", {}, `${name} ${format(value)}`));
   return node;
@@ -154,8 +161,8 @@ export function segment(colour, name, value, whole, format) {
 
 /** One group of a row: a caption (its name, what is used) over its bar. */
 function group(kind, title, used, part, total, parts, format) {
-  const segments = parts.map(([colour, name, value]) =>
-    segment(colour, name, value, part.width, format),
+  const segments = parts.map(([colour, name, value, title]) =>
+    segment(colour, name, value, part.width, format, title),
   );
   return el(
     "div",
@@ -165,9 +172,20 @@ function group(kind, title, used, part, total, parts, format) {
   );
 }
 
-/** A group's named programs as segments, every other one a shade lighter to tell them apart. */
+/**
+ * A group's named programs as segments, every other one a shade lighter to tell
+ * them apart. A Windows program's memory segment is what it holds in RAM; its
+ * tooltip gives its commit too, which Windows may have trimmed out of RAM.
+ */
 const programs = (part) =>
-  part.named.map(({ name, value }, i) => [`k-prog${i % 2 === 1 ? " alt" : ""}`, name, value]);
+  part.named.map(({ name, value, commit }, i) => [
+    `k-prog${i % 2 === 1 ? " alt" : ""}`,
+    name,
+    value,
+    commit === undefined
+      ? undefined
+      : `${name}: ${bytes(value)} in RAM · ${bytes(commit)} committed by all its processes`,
+  ]);
 
 function row(label, r, format, known) {
   const prifly = r.win.prifly + (r.wsl?.prifly ?? 0);

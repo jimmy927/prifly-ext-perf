@@ -26,6 +26,7 @@ import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf
 import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { historyOf } from "./history";
+import { type Holders, holdersOf } from "./holders";
 import { HOST } from "./host";
 import { McpConfig } from "./mcp";
 import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
@@ -53,14 +54,13 @@ import {
 import {
   cpuSplit,
   stopPowershell,
-  topProcesses,
   type WindowsCounters,
   type WindowsInfo,
-  type WindowsProcess,
   WindowsSampler,
   windowsInfo,
   windowsTools,
 } from "./windows";
+import { topProcesses, type WindowsProcess } from "./windows-top";
 import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
 
@@ -101,6 +101,8 @@ type State = {
   topWindows: WindowsProcess[];
   /** The memory compression store's bytes, read with `topWindows`; null until read, or where it cannot be. */
   compressed: number | null;
+  /** Who holds Windows' memory, read with `topWindows` (`holders.ts`); null until read. */
+  holders: Holders | null;
   topWindowsAt: number;
   /** The graphics card, read while the window is open (`gpu-live.ts`). */
   gpu: GpuMonitor;
@@ -207,8 +209,19 @@ function refreshWhileOpen(current: State): void {
       .then((top) => {
         current.topWindows = top.processes;
         current.compressed = top.compressed;
+        // A host on Windows itself is a Windows process: its own, and its window, are told apart.
+        current.holders = holdersOf(top.out, current.tables.native ? process.pid : null);
       })
-      .catch((error: unknown) => current.api.log("top_failed", { error: String(error) }));
+      .catch((error: unknown) => {
+        current.api.log("top_failed", { error: String(error) });
+        current.holders = {
+          groups: [],
+          committed: null,
+          pools: null,
+          shared: null,
+          error: `Windows' process list could not be read: ${String(error)}`,
+        };
+      });
   }
   if (now - current.cloudAt > CLOUD_EVERY) {
     current.cloudAt = now;
@@ -374,6 +387,7 @@ export function activate(api: ExtensionApi): () => void {
     info: null,
     topWindows: [],
     compressed: null,
+    holders: null,
     topWindowsAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
     cloud: null,
@@ -494,6 +508,8 @@ function status(current: State, seconds: number) {
     windows: windowsStatus(current, windows?.value ?? null, windowsJudged),
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
+    // Who holds Windows' memory: null without Windows, `{reading: true}` until its first read.
+    holders: current.windows === null ? null : (current.holders ?? { reading: true }),
     others,
     prifly: report,
     // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.

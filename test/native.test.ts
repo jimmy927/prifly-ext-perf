@@ -208,19 +208,19 @@ describe("prifly's sessions on a host on Windows itself", () => {
 
 /** What `windowsProcessList` printed, cut to the processes that matter. */
 const WINDOWS = [
-  "0|0|0|System Idle Process|0|8192|0|0|",
-  "4|0|630000000000000000|System|9000000|20480|0|0|",
-  "8000|1|638000000000000000|explorer.exe|50000000|90000000|0|0|C:\\Windows\\Explorer.EXE",
+  "0|0|0|System Idle Process|0|8192|0|0|0|",
+  "4|0|630000000000000000|System|9000000|20480|0|0|200000|",
+  "8000|1|638000000000000000|explorer.exe|50000000|90000000|0|0|120000000|C:\\Windows\\Explorer.EXE",
   // The host.
-  '9000|8000|639000000000000000|prifly.exe|20000000|300000000|1000|2000|"C:\\Users\\j\\AppData\\Local\\sh.prifly.app\\prifly.exe"',
-  '9100|9000|639000000000000100|bun.exe|10000000|500000000|0|0|"C:\\p\\bun.exe" "C:\\p\\dictation\\final-worker.ts" {}',
-  '9101|9000|639000000000000100|bun.exe|5000000|200000000|0|0|"C:\\p\\bun.exe" C:\\p\\intent-model\\worker.js',
-  '9200|9000|639000000000000200|msedgewebview2.exe|3000000|100000000|0|0|"C:\\Program Files\\msedgewebview2.exe" --type=browser --x=a|b',
-  "9201|9200|639000000000000300|msedgewebview2.exe|1000000|50000000|0|0|msedgewebview2.exe --type=renderer",
-  "9300|9000|639000000000000400|claude.exe|1000000|60000000|0|0|claude.exe --print --model haiku",
+  '9000|8000|639000000000000000|prifly.exe|20000000|300000000|1000|2000|900000000|"C:\\Users\\j\\AppData\\Local\\sh.prifly.app\\prifly.exe"',
+  '9100|9000|639000000000000100|bun.exe|10000000|500000000|0|0|4000000000|"C:\\p\\bun.exe" "C:\\p\\dictation\\final-worker.ts" {}',
+  '9101|9000|639000000000000100|bun.exe|5000000|200000000|0|0|400000000|"C:\\p\\bun.exe" C:\\p\\intent-model\\worker.js',
+  '9200|9000|639000000000000200|msedgewebview2.exe|3000000|100000000|0|0|800000000|"C:\\Program Files\\msedgewebview2.exe" --type=browser --x=a|b',
+  "9201|9200|639000000000000300|msedgewebview2.exe|1000000|50000000|0|0|800000000|msedgewebview2.exe --type=renderer",
+  "9300|9000|639000000000000400|claude.exe|1000000|60000000|0|0|200000000|claude.exe --print --model haiku",
   // A dead parent's pid, reused by the host: this started before it, so it is not its child.
-  "9400|9000|637000000000000000|conhost.exe|1000000|1000000|0|0|conhost.exe",
-  "9500|8000|639000000000000500|Code.exe|90000000|900000000|0|0|Code.exe",
+  "9400|9000|637000000000000000|conhost.exe|1000000|1000000|0|0|5000000|conhost.exe",
+  "9500|8000|639000000000000500|Code.exe|90000000|900000000|0|0|700000000|Code.exe",
   "this line is no process",
 ].join("\r\n");
 

@@ -38,3 +38,12 @@ test("the biggest programs are named out of Windows' Other, the small ones stay 
   expect(m.memory.win.rest).toBe(10 * GB);
   expect(m.memory.win.other).toBe(13 * GB);
 });
+
+test("a Windows program's memory segment is its RAM, and carries its commit for the tooltip", () => {
+  const s = state(7 * GB);
+  s.others.windows = [{ name: "teams", cpu: 2, rss: 3 * GB, commit: 5 * GB }] as never;
+  const m = whereModel(s);
+  expect(m.memory.win.named).toEqual([{ name: "teams", value: 3 * GB, commit: 5 * GB }]);
+  // The CPU row names it too, with no commit.
+  expect(m.cpu.win.named).toEqual([{ name: "teams", value: expect.any(Number) }]);
+});

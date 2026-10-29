@@ -1,14 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseProcStat } from "../procs";
-import {
-  COUNTERS,
-  compressionOf,
-  cpuSplit,
-  machineBusy,
-  parseRow,
-  sumByName,
-  type WindowsCounters,
-} from "../windows";
+import { COUNTERS, cpuSplit, machineBusy, parseRow, type WindowsCounters } from "../windows";
+import { compressionOf, sumByName } from "../windows-top";
 import { parseMeminfo, parsePressure, parseStat } from "../wsl";
 
 describe("Linux files", () => {
@@ -79,33 +72,38 @@ describe("Windows counters", () => {
 
   test("processes are summed by name, in cores, busiest first", () => {
     const out = [
-      "vmmemwsl|% processor time|1256",
-      "msedgewebview2|% processor time|50",
-      "msedgewebview2#1|% processor time|30",
-      "msedgewebview2#1|working set - private|1000",
-      "_total|% processor time|1600",
-      "idle|% processor time|200",
+      "c|vmmemwsl|% processor time|1256",
+      "c|msedgewebview2|% processor time|50",
+      "c|msedgewebview2#1|% processor time|30",
+      "c|_total|% processor time|1600",
+      "c|idle|% processor time|200",
     ].join("\r\n");
     expect(sumByName(out)).toEqual([
-      { name: "vmmemwsl", cpu: 12.56, kernel: 0, memory: 0 },
-      { name: "msedgewebview2", cpu: 0.8, kernel: 0, memory: 1000 },
+      { name: "vmmemwsl", cpu: 12.56, kernel: 0, commit: 0, ram: 0 },
+      { name: "msedgewebview2", cpu: 0.8, kernel: 0, commit: 0, ram: 0 },
     ]);
   });
 
-  test("kernel time is summed by name, in cores, apart from memory", () => {
+  test("kernel time is summed by name, in cores; commit and RAM come from the process list", () => {
     const out = [
-      "docker-desktop|% processor time|92",
-      "docker-desktop|% privileged time|90",
-      "bun|% processor time|60",
-      "bun#1|% processor time|40",
-      "bun|% privileged time|45",
-      "bun#1|% privileged time|45",
-      "bun|working set - private|13000",
+      "c|docker-desktop|% processor time|92",
+      "c|docker-desktop|% privileged time|90",
+      "c|bun|% processor time|60",
+      "c|bun#1|% processor time|40",
+      "c|bun|% privileged time|45",
+      "c|bun#1|% privileged time|45",
       "compression|1064304640",
+      "memory|77309411328|3221225472|3650722201",
+      "0|0|0|System Idle Process|0|8192|0|0||",
+      "700|600|639000000000000000|bun.exe|0|3000|0|0|10000|bun test",
+      "701|600|639000000000000000|bun.exe|0|500|0|0|3000|bun x",
+      // Started after the CPU sample: in the list, not in the counters.
+      "702|600|639000000000000000|dwm.exe|0|200|0|0|1650|dwm.exe",
     ].join("\r\n");
     expect(sumByName(out)).toEqual([
-      { name: "bun", cpu: 1, kernel: 0.9, memory: 13000 },
-      { name: "docker-desktop", cpu: 0.92, kernel: 0.9, memory: 0 },
+      { name: "bun", cpu: 1, kernel: 0.9, commit: 13000, ram: 3500 },
+      { name: "docker-desktop", cpu: 0.92, kernel: 0.9, commit: 0, ram: 0 },
+      { name: "dwm", cpu: 0, kernel: 0, commit: 1650, ram: 200 },
     ]);
   });
 
