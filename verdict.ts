@@ -9,7 +9,8 @@
  *   `full`, and also by what is available (orange under 20 %, red under 10 %).
  * - Windows: the long-standing Performance Monitor guidance — a processor
  *   queue above two per core is a CPU bottleneck; memory by commit charge,
- *   page-file writes and trimming (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
+ *   page-file writes, trimming and the kernel pools (`windowsMemoryChecks`),
+ *   with the reasons named; disk reads slower than 25 ms are out of spec (15 ms
  *   worth watching). `Pages Input/sec` is left out on purpose: its "under 15"
  *   rule dates from spinning disks, and an NVMe laptop reads thousands a
  *   second with nothing wrong (4,195 measured here, 2026-10-01).
@@ -53,45 +54,106 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
 /**
  * Transition faults a second at which Windows counts as short, and out, of
  * memory: pages trimmed out of working sets and faulted straight back.
- * PROVISIONAL, awaiting idle and normal readings on this machine: on
- * 2026-10-29, at 92 % committed and 4.7–7.6 GB of 47 GB available, it ran
- * 74,000–160,000 a second (138,000 typical) with no page-file writes at all.
+ * Calibrated on the one recording there is, made while the machine was
+ * overloaded (2026-10-29, 17:27–17:48, every 5 s, 240 samples; commit 88–98 %,
+ * 2.8–11 GB of 47 GB available, the page file untouched at the median): its
+ * 5th/25th/50th/75th/95th percentiles were 55k/89k/117k/143k/168k a second.
+ * Orange sits below the 5th, so even the mildest minute of that overload is
+ * orange; red below the 25th. No calm reading exists yet (WSL's way into
+ * Windows died at 17:48), so a calm machine's level is not known.
  */
-const TRIMMING_WARNING = 20_000;
+const TRIMMING_WARNING = 30_000;
 const TRIMMING_CRITICAL = 80_000;
+
+/** Bytes in a kernel pool past which it is abnormal: usual is a few hundred MB, and 4.7 GB was a token leak. */
+export const POOL_ABNORMAL = 2 * 2 ** 30;
+
+const GiB = 2 ** 30;
+const gb = (n: number): string => `${(n / GiB).toFixed(1)} GB`;
+const thousands = (n: number): string =>
+  n < 1000 ? `${Math.round(n)}` : `${Math.round(n / 1000)}k`;
+
+/** What Windows memory was judged by: one check, its colour and what it says. */
+export type MemoryCheck = {
+  what: "commit" | "trimming" | "pageFile" | "available" | "poolPaged" | "poolNonpaged";
+  tone: Tone;
+  text: string;
+};
 
 /**
  * Windows memory, judged by what shows a real shortage: commit charge (can
  * Windows still hand memory out?), writes to the page file (is it pushing
- * memory out to make room?) and transition faults (is it trimming working
- * sets and compressing them, which never reaches the page file?). Available
- * memory counts only when it is truly low: the WSL VM keeps its own file cache
+ * memory out to make room?), transition faults (is it trimming working sets
+ * and compressing them, which never reaches the page file?) and the kernel's
+ * pools (is a driver or service leaking?). Available memory counts only when
+ * it is truly low: the WSL VM keeps its own file cache
  * (`autoMemoryReclaim=disabled`), so 18 % available with 70 % committed and no
  * paging is a calm machine, not a short one (measured here, 2026-10-01).
+ *
+ * Every check Windows gave a reading for, green ones too, so the screen can
+ * say why memory is fine as well as why it is not. A counter that is missing
+ * is no check at all, never a 0.
  */
-function windowsMemory(c: WindowsCounters, info: WindowsInfo): Tone {
-  const availableBytes = (c.availableMB ?? 0) * 2 ** 20;
-  const available = info.memTotal > 0 ? availableBytes / info.memTotal : 1;
-  const low =
-    available < 0.05 || availableBytes < 2 ** 30
-      ? "critical"
-      : available < 0.1 || availableBytes < 2 * 2 ** 30
-        ? "warning"
-        : "good";
-  // Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red.
-  return worst(
-    low,
-    band(c.committed ?? 0, 90, 97),
-    band(c.pagesOut ?? 0, 256, 2560),
-    band(c.transitionFaults ?? 0, TRIMMING_WARNING, TRIMMING_CRITICAL),
-  );
+export function windowsMemoryChecks(c: WindowsCounters, info: WindowsInfo): MemoryCheck[] {
+  const checks = [
+    c.committed === null ? null : commitCheck(c.committed),
+    c.transitionFaults === null ? null : trimmingCheck(c.transitionFaults),
+    c.pagesOut === null ? null : pageFileCheck(c.pagesOut),
+    c.availableMB === null ? null : availableCheck(c.availableMB * 2 ** 20, info.memTotal),
+    c.poolPaged === null ? null : poolCheck("poolPaged", "paged pool", c.poolPaged),
+    c.poolNonpaged === null ? null : poolCheck("poolNonpaged", "non-paged pool", c.poolNonpaged),
+  ];
+  return checks.filter((check) => check !== null);
+}
+
+function commitCheck(committed: number): MemoryCheck {
+  const text = `${Math.round(committed)} % of commit used`;
+  return { what: "commit", tone: band(committed, 90, 97), text };
+}
+
+function trimmingCheck(faults: number): MemoryCheck {
+  const tone = band(faults, TRIMMING_WARNING, TRIMMING_CRITICAL);
+  return {
+    what: "trimming",
+    tone,
+    text: `Windows is trimming ${thousands(faults)} pages a second`,
+  };
+}
+
+/** Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red. */
+function pageFileCheck(pagesOut: number): MemoryCheck {
+  const mb = (pagesOut * 4096) / 2 ** 20;
+  const text =
+    mb < 0.1 ? "nothing written to the page file" : `${mb.toFixed(1)} MB/s to the page file`;
+  return { what: "pageFile", tone: band(pagesOut, 256, 2560), text };
+}
+
+function availableCheck(bytes: number, memTotal: number): MemoryCheck {
+  const share = memTotal > 0 ? bytes / memTotal : 1;
+  const tone: Tone =
+    share < 0.05 || bytes < GiB ? "critical" : share < 0.1 || bytes < 2 * GiB ? "warning" : "good";
+  const text = tone === "good" ? `${gb(bytes)} available` : `only ${gb(bytes)} available`;
+  return { what: "available", tone, text };
+}
+
+function poolCheck(what: "poolPaged" | "poolNonpaged", name: string, bytes: number): MemoryCheck {
+  if (bytes <= POOL_ABNORMAL) return { what, tone: "good", text: `${name} ${gb(bytes)}` };
+  const text = `kernel ${name} ${gb(bytes)}, over 2 GB: a driver or service is leaking`;
+  return { what, tone: "warning", text };
+}
+
+/** The checks that are not green, worst first: why Windows is short of memory. */
+export function memoryReasons(checks: readonly MemoryCheck[]): MemoryCheck[] {
+  return checks
+    .filter((check) => check.tone !== "good")
+    .sort((a, b) => RANK[b.tone] - RANK[a.tone]);
 }
 
 export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts {
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
   return {
     cpu: band((c.queue ?? 0) / info.cores, 1, 2),
-    memory: windowsMemory(c, info),
+    memory: worst(...windowsMemoryChecks(c, info).map((check) => check.tone)),
     disk: band(latency, 15, 25),
   };
 }
@@ -112,20 +174,28 @@ export function withGreyWords<H extends { tone: Tone; text: string }>(h: H, grey
 
 const WORDS: Record<Resource, string> = { cpu: "CPU", memory: "memory", disk: "disk" };
 
-/** "Out of CPU in WSL." / "Short of memory in Windows." / "Everything is fine." */
-export function headline(places: { name: string; verdicts: Verdicts }[]): {
+/** A place the headline judges; `memoryReasons` (Windows) says why its memory is not green. */
+export type Place = { name: string; verdicts: Verdicts; memoryReasons?: readonly string[] };
+
+/**
+ * "Out of CPU in WSL." / "Short of memory in Windows: 96 % of commit used,
+ * Windows is trimming 150k pages a second." / "Nothing is short: …". A place
+ * with memory reasons names them after its memory sentence.
+ */
+export function headline(places: Place[]): {
   tone: Tone;
   text: string;
 } {
   const out: string[] = [];
   let tone: Tone = "good";
   for (const severity of ["critical", "warning"] as const) {
-    for (const { name, verdicts } of places) {
+    for (const { name, verdicts, memoryReasons: why = [] } of places) {
       const short = (Object.keys(verdicts) as Resource[]).filter((r) => verdicts[r] === severity);
       if (short.length === 0) continue;
       tone = worst(tone, severity);
       const what = short.map((r) => WORDS[r]).join(" and ");
-      out.push(`${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}.`);
+      const reasons = short.includes("memory") && why.length > 0 ? `: ${why.join(", ")}` : "";
+      out.push(`${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}${reasons}.`);
     }
   }
   return {

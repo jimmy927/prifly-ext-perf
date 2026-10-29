@@ -2,15 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { type HostProcess, hookHostExit } from "../host-exit";
+import { COUNTERS, fromProcess } from "../windows";
 import {
-  COUNTERS,
-  fromProcess,
   HANDOVER_SAMPLES,
   RUN_SECONDS,
   type SamplerDeps,
   type TypeperfChild,
   WindowsSampler,
-} from "../windows";
+} from "../windows-sampler";
 
 const FIELDS = Object.keys(COUNTERS).length;
 const HEADER = `"(PDH-CSV 4.0)",${Object.values(COUNTERS)
