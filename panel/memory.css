@@ -45,6 +45,12 @@
   padding: 1px 8px 1px 0;
   border-bottom: 0;
   font-size: 11.5px;
+  white-space: nowrap;
+}
+/* What a tag is may wrap; the numbers beside it never do. */
+.pooltags td.muted {
+  white-space: normal;
+  width: 100%;
 }
 .pooltags p {
   margin: 3px 0 0;
