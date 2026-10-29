@@ -48,10 +48,15 @@ and a sparkline of the averages:
 
 | | WSL | Windows |
 |---|---|---|
-| **CPU** | tasks ready to run against cores, and how long they waited for one | % of the machine busy, the processor queue, and the WSL VM's share of the machine |
+| **CPU** | tasks ready to run against cores, and how long they waited for one | % of the machine busy, the processor queue, and a bar of what the busy time is: programs (user time), Windows' own kernel, and the WSL VM; under it the programs that spend most time in the kernel |
 | **Memory** | available of total, time stalled waiting for memory, swap | available, committed, and the total |
 | **Disk** | read and write rates, time stalled waiting for disk | % busy, time per request, rates, queue |
-| last row | load average, uncoloured | writes to the page file, uncoloured |
+| last row | load average, uncoloured | writes to the page file, transition and demand-zero faults a second, how full the page file is, and the size of the memory compression store; uncoloured |
+
+A reading Windows could not give (a counter missing, or a value that cannot
+be right) is left out of its row rather than shown as 0. Without WSL there is
+no WSL VM part in the CPU bar, and Windows' kernel time is shown as Windows
+counts it.
 
 ### Where it goes
 
@@ -123,6 +128,7 @@ the GPU open it is counted into them. Read only while the window is open.
 | Windows CPU: processor queue per core | 1 | 2 |
 | Windows memory: committed | 90 % | 97 % |
 | Windows memory: writes to the page file | 1 MB/s | 10 MB/s |
+| Windows memory: transition faults, pages trimmed out of programs and faulted back (provisional) | 20,000/s | 80,000/s |
 | Windows memory: available | under 10 % or 2 GB | under 5 % or 1 GB |
 | Windows disk: time per read or write | 15 ms | 25 ms |
 
@@ -135,10 +141,31 @@ counts tasks waiting on disk in it. Without PSI, a run queue of more than twice
 the cores stands in for CPU.
 
 Windows memory is judged mainly by commit charge (can Windows still hand
-memory out?) and by writes to the page file (is it pushing memory out to make
-room?). Low available memory counts only when it is truly low. The WSL VM
-keeps its own file cache, which Windows counts as used, so 18 % available with
-70 % committed and no paging is a calm machine.
+memory out?), by writes to the page file (is it pushing memory out to make
+room?) and by transition faults (is it squeezing programs to make room?). Low
+available memory counts only when it is truly low. The WSL VM keeps its own
+file cache, which Windows counts as used, so 18 % available with 70 %
+committed and no paging is a calm machine.
+
+Writes to the page file alone miss most of the squeezing. When memory runs
+short, Windows first trims pages out of programs' working sets and compresses
+them into the memory compression store, a process of its own that lives in
+RAM and never writes to the page file. Each trimmed page a program touches
+again is a transition fault: cheap one at a time, but at 138,000 a second, with
+92 % committed and the page file untouched, the machine was slow (measured on
+the machine this was written on, 2026-10-29). So the transition faults are the
+signal, and their thresholds are provisional until the machine's idle and
+normal readings are in. Demand-zero faults (fresh zeroed pages, often a
+program allocating fast) and the store's size are shown beside them, without
+a colour.
+
+Windows counts all of the WSL VM's CPU as kernel time: the guest's Linux
+programs too, not only Windows' kernel working for the VM
+(`\Process(vmmemwsl)\% Privileged Time` reads the same as its `% Processor
+Time`). Read as it is, kernel time looks like Windows busy managing memory or
+files when much of it is WSL computing. The CPU row's bar takes the VM's share
+of the machine (its CPU over the cores) out of kernel time, so what is left is
+Windows' own kernel.
 
 For CPU and disk, the Windows thresholds are the usual Performance Monitor
 guidance. One
@@ -226,7 +253,10 @@ you are.
   package or script each one runs. `npx -y @playwright/mcp` runs as `npm exec
   @playwright/mcp`, so the launcher alone tells nothing. A process that looks
   like an MCP server but is in no config read here shows as *unlisted*.
-- **Windows' busiest processes** (the shared PowerShell, every 10 s) and **cloud
+- **Windows' busiest processes**, with their kernel time, and the memory
+  compression store's size (the `Memory Compression` process's working set,
+  which the Process counters leave out), both from the shared PowerShell
+  every 10 s, and **cloud
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 

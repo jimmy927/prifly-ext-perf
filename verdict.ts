@@ -8,8 +8,8 @@
  *   outright. Memory is orange from 5 % `full` or 20 % `some`, red from 20 %
  *   `full`, and also by what is available (orange under 20 %, red under 10 %).
  * - Windows: the long-standing Performance Monitor guidance — a processor
- *   queue above two per core is a CPU bottleneck; memory by commit charge and
- *   page-file writes (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
+ *   queue above two per core is a CPU bottleneck; memory by commit charge,
+ *   page-file writes and trimming (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
  *   worth watching). `Pages Input/sec` is left out on purpose: its "under 15"
  *   rule dates from spinning disks, and an NVMe laptop reads thousands a
  *   second with nothing wrong (4,195 measured here, 2026-10-01).
@@ -51,12 +51,23 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
 }
 
 /**
+ * Transition faults a second at which Windows counts as short, and out, of
+ * memory: pages trimmed out of working sets and faulted straight back.
+ * PROVISIONAL, awaiting idle and normal readings on this machine: on
+ * 2026-10-29, at 92 % committed and 4.7–7.6 GB of 47 GB available, it ran
+ * 74,000–160,000 a second (138,000 typical) with no page-file writes at all.
+ */
+const TRIMMING_WARNING = 20_000;
+const TRIMMING_CRITICAL = 80_000;
+
+/**
  * Windows memory, judged by what shows a real shortage: commit charge (can
- * Windows still hand memory out?) and writes to the page file (is it pushing
- * memory out to make room?). Available memory counts only when it is truly
- * low: the WSL VM keeps its own file cache (`autoMemoryReclaim=disabled`), so
- * 18 % available with 70 % committed and no paging is a calm machine, not a
- * short one (measured here, 2026-10-01).
+ * Windows still hand memory out?), writes to the page file (is it pushing
+ * memory out to make room?) and transition faults (is it trimming working
+ * sets and compressing them, which never reaches the page file?). Available
+ * memory counts only when it is truly low: the WSL VM keeps its own file cache
+ * (`autoMemoryReclaim=disabled`), so 18 % available with 70 % committed and no
+ * paging is a calm machine, not a short one (measured here, 2026-10-01).
  */
 function windowsMemory(c: WindowsCounters, info: WindowsInfo): Tone {
   const availableBytes = (c.availableMB ?? 0) * 2 ** 20;
@@ -68,7 +79,12 @@ function windowsMemory(c: WindowsCounters, info: WindowsInfo): Tone {
         ? "warning"
         : "good";
   // Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red.
-  return worst(low, band(c.committed ?? 0, 90, 97), band(c.pagesOut ?? 0, 256, 2560));
+  return worst(
+    low,
+    band(c.committed ?? 0, 90, 97),
+    band(c.pagesOut ?? 0, 256, 2560),
+    band(c.transitionFaults ?? 0, TRIMMING_WARNING, TRIMMING_CRITICAL),
+  );
 }
 
 export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts {

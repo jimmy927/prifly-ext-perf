@@ -51,6 +51,7 @@ import {
   withGreyWords,
 } from "./verdict";
 import {
+  cpuSplit,
   stopPowershell,
   topProcesses,
   type WindowsCounters,
@@ -98,6 +99,8 @@ type State = {
   windows: WindowsSampler | null;
   info: WindowsInfo | null;
   topWindows: WindowsProcess[];
+  /** The memory compression store's bytes, read with `topWindows`; null until read, or where it cannot be. */
+  compressed: number | null;
   topWindowsAt: number;
   /** The graphics card, read while the window is open (`gpu-live.ts`). */
   gpu: GpuMonitor;
@@ -202,7 +205,8 @@ function refreshWhileOpen(current: State): void {
     current.topWindowsAt = now;
     topProcesses()
       .then((top) => {
-        current.topWindows = top;
+        current.topWindows = top.processes;
+        current.compressed = top.compressed;
       })
       .catch((error: unknown) => current.api.log("top_failed", { error: String(error) }));
   }
@@ -369,6 +373,7 @@ export function activate(api: ExtensionApi): () => void {
     windows,
     info: null,
     topWindows: [],
+    compressed: null,
     topWindowsAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
     cloud: null,
@@ -447,6 +452,25 @@ function priflyOf(current: State, seconds: number) {
   return { procs, containers, report, priflyWindows, others };
 }
 
+/** Windows' block of the page, from counters already averaged; null where there is no Windows to read. */
+function windowsStatus(
+  current: State,
+  counters: WindowsCounters | null,
+  verdicts: Verdicts | null,
+) {
+  if (current.windows === null) return null;
+  return {
+    counters,
+    info: current.info,
+    // User, Windows' kernel and the WSL VM, as shares of the machine (`cpuSplit`).
+    split:
+      counters === null || current.info === null ? null : cpuSplit(counters, current.info.cores),
+    compressed: current.compressed,
+    verdicts,
+    error: current.windows.error,
+  };
+}
+
 /** Everything the page shows, each number averaged over the last `seconds`. */
 function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
@@ -467,15 +491,7 @@ function status(current: State, seconds: number) {
     // Why the prifly tab is empty: "" wherever the process table is read, and on a
     // host on Windows itself while WSL runs.
     processes: current.wsl?.absent ?? "",
-    windows:
-      current.windows === null
-        ? null
-        : {
-            counters: windows?.value ?? null,
-            info: current.info,
-            verdicts: windowsJudged,
-            error: current.windows.error,
-          },
+    windows: windowsStatus(current, windows?.value ?? null, windowsJudged),
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     others,

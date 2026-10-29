@@ -25,10 +25,22 @@ const { system32: SYSTEM32, typeperf: TYPEPERF, powershell: POWERSHELL } = HOST;
 /** Counter path → field, in the order `typeperf` is given them. */
 export const COUNTERS = {
   busy: "\\Processor(_Total)\\% Processor Time",
+  // Busy split in two: programs' own code, and the kernel working for them.
+  // Windows counts the WSL VM's whole guest, Linux programs included, as
+  // kernel time: `\Process(vmmemwsl)\% Privileged Time` equals its
+  // `% Processor Time` (263.66 both, 2026-10-29). `cpuSplit` takes it out.
+  user: "\\Processor(_Total)\\% User Time",
+  privileged: "\\Processor(_Total)\\% Privileged Time",
   queue: "\\System\\Processor Queue Length",
   availableMB: "\\Memory\\Available MBytes",
   committed: "\\Memory\\% Committed Bytes In Use",
   pagesOut: "\\Memory\\Pages Output/sec",
+  // Soft faults, which never touch the page file. A transition fault is a page
+  // Windows trimmed out of a working set (to the standby list, or the
+  // compression store) and handed back on the next touch: many a second is
+  // Windows squeezing memory. A demand-zero fault is a fresh zeroed page.
+  transitionFaults: "\\Memory\\Transition Faults/sec",
+  demandZeroFaults: "\\Memory\\Demand Zero Faults/sec",
   pageFile: "\\Paging File(_Total)\\% Usage",
   diskIdle: "\\PhysicalDisk(_Total)\\% Idle Time",
   readLatency: "\\PhysicalDisk(_Total)\\Avg. Disk sec/Read",
@@ -55,6 +67,8 @@ export type Field = keyof typeof COUNTERS;
  */
 const SHARES: ReadonlySet<Field> = new Set([
   "busy",
+  "user",
+  "privileged",
   "committed",
   "pageFile",
   "diskIdle",
@@ -66,6 +80,24 @@ export type WindowsCounters = { at: number } & Record<Field, number | null>;
 
 /** Share of the machine busy, 0–100: the hypervisor's count, else Windows' own where it has none. */
 export const machineBusy = (c: WindowsCounters): number => c.machine ?? c.busy ?? 0;
+
+/**
+ * Windows' busy time as shares of the machine, 0–100: programs' own code
+ * (`user`), Windows' own kernel (`kernel`), and the WSL VM's guest (`vm`),
+ * which Windows counts as kernel time and is taken out of it here. `vm` is
+ * null without WSL (no vmmemwsl), and the kernel is then as Windows counts it.
+ * The VM's share is capped at the kernel time it is part of: the counters are
+ * read a moment apart. Null where Windows gave no user or kernel time.
+ */
+export function cpuSplit(
+  c: WindowsCounters,
+  cores: number,
+): { user: number; kernel: number; vm: number | null } | null {
+  if (c.user === null || c.privileged === null || cores <= 0) return null;
+  // `wslVm` is summed over cores: 100 is one core.
+  const vm = c.wslVm === null ? null : Math.min(c.wslVm / cores, c.privileged);
+  return { user: c.user, kernel: Math.max(0, c.privileged - (vm ?? 0)), vm };
+}
 
 /** Every graphics adapter's dedicated memory in use, read next to the others; the `*` is each adapter's luid. */
 export const GPU_ADAPTER = "\\GPU Adapter Memory(*)\\Dedicated Usage";
@@ -95,7 +127,11 @@ export function parseGpuAdapters(header: string, line: string): Map<string, numb
 
 export type WindowsInfo = { name: string; cores: number; memTotal: number };
 
-export type WindowsProcess = { name: string; cpu: number; memory: number };
+/** A program's processes added up: cores busy, of them cores in the kernel, and private memory. */
+export type WindowsProcess = { name: string; cpu: number; kernel: number; memory: number };
+
+/** `topProcesses`' answer: the processes, and the compression store's size in bytes, null where it was not read. */
+export type WindowsTop = { processes: WindowsProcess[]; compressed: number | null };
 
 export function windowsTools(): boolean {
   return existsSync(TYPEPERF) && existsSync(POWERSHELL);
@@ -397,16 +433,28 @@ export async function windowsInfo(): Promise<WindowsInfo> {
 
 /**
  * What uses Windows' CPU now: every process's CPU over two seconds, in cores,
- * with its private memory. Instances of one program (#1, #2) are added up.
+ * of it the kernel's, with its private memory. Instances of one program (#1,
+ * #2) are added up. And the memory compression store's size: the working set
+ * of the `Memory Compression` process, which the Process counters leave out.
  */
-export async function topProcesses(): Promise<WindowsProcess[]> {
+export async function topProcesses(): Promise<WindowsTop> {
   const out = await powershell(
-    "(Get-Counter '\\Process(*)\\% Processor Time','\\Process(*)\\Working Set - Private' -SampleInterval 2 -MaxSamples 1).CounterSamples | " +
+    // A process that ends mid-sample makes Get-Counter say "data in one of the
+    // performance counter samples is not valid" and still return the rest:
+    // silenced, so it is not taken for a failure.
+    "(Get-Counter '\\Process(*)\\% Processor Time','\\Process(*)\\% Privileged Time','\\Process(*)\\Working Set - Private' -SampleInterval 2 -MaxSamples 1 -ErrorAction SilentlyContinue).CounterSamples | " +
       // Invariant culture: a Swedish Windows writes 12,5 otherwise.
-      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}', $_.InstanceName, $_.Path.Split('\\')[-1], $_.CookedValue) }",
+      "% { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}', $_.InstanceName, $_.Path.Split('\\')[-1], $_.CookedValue) }; " +
+      "Get-Process -Name 'Memory Compression' -ErrorAction SilentlyContinue | % { 'compression|' + $_.WorkingSet64 }",
     20_000,
   );
-  return sumByName(out);
+  return { processes: sumByName(out), compressed: compressionOf(out) };
+}
+
+/** The compression store's bytes from `topProcesses`' `compression|<bytes>` line; null without one. */
+export function compressionOf(out: string): number | null {
+  const digits = /^compression\|(\d+)\s*$/m.exec(out)?.[1];
+  return digits === undefined ? null : Number(digits);
 }
 
 /**
@@ -515,8 +563,9 @@ export function sumByName(out: string): WindowsProcess[] {
     if (instance === undefined || counter === undefined || value === undefined) continue;
     const name = instance.replace(/#\d+$/, "");
     if (name === "_total" || name === "idle") continue;
-    const entry = byName.get(name) ?? { name, cpu: 0, memory: 0 };
+    const entry = byName.get(name) ?? { name, cpu: 0, kernel: 0, memory: 0 };
     if (counter.startsWith("% processor")) entry.cpu += Number(value) / 100;
+    else if (counter.startsWith("% privileged")) entry.kernel += Number(value) / 100;
     else entry.memory += Number(value);
     byName.set(name, entry);
   }

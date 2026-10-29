@@ -41,6 +41,11 @@ export function bytes(n) {
 export const rate = (n) => (n < 1000 ? "0" : `${bytes(n)}/s`);
 export const pct = (n) => `${n < 10 ? n.toFixed(1) : Math.round(n)}%`;
 export const cores = (n) => (n < 0.05 ? "0" : `${n.toFixed(1)} cores`);
+/** A count a second: 95/s, 138k/s. */
+export const perSecond = (n) => (n < 1000 ? `${Math.round(n)}/s` : `${Math.round(n / 1000)}k/s`);
+
+/** A Windows program as the panel names it: `vmmemwsl` (or `vmmem`) is the WSL VM. */
+export const programName = (name) => (/^vmmem/.test(name) ? "WSL VM" : name);
 
 /** A five-minute line of `values`, scaled to `max` (or to its own peak). */
 export function spark(values, max) {

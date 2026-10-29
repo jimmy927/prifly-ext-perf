@@ -141,7 +141,7 @@ export function whereModel(state) {
 }
 
 /** One bar's segment: `value` as its share of the group's `whole`; nothing where it is zero. */
-function segment(colour, name, value, whole, format) {
+export function segment(colour, name, value, whole, format) {
   if (!(value > 0) || !(whole > 0)) return null;
   const node = el("div", {
     class: `seg ${colour}`,

@@ -5,20 +5,27 @@
 
 import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
-import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
+import { $, bytes, cores, el, pct, perSecond, programName, rate, spark } from "./format.js";
 import { gpuCard } from "./gpu.js";
 import { drawMcp } from "./mcp.js";
-import { drawWhere } from "./where.js";
+import { drawWhere, segment } from "./where.js";
 
 let last = null;
 
-function metric(tone, name, main, small, line) {
+/** One row of a host card; `below` goes under its reading (a bar, more lines). */
+function metric(tone, name, main, small, line, below = []) {
   return el(
     "div",
     { class: `metric ${tone}` },
     el("span", { class: "dot" }),
     el("span", { class: "name" }, name),
-    el("span", { class: "read" }, el("span", { class: "num" }, main), el("small", {}, small)),
+    el(
+      "span",
+      { class: "read" },
+      el("span", { class: "num" }, main),
+      el("small", {}, small),
+      ...below,
+    ),
     line,
   );
 }
@@ -79,17 +86,69 @@ function absentCard(why) {
   return hostCard("WSL", "not on this host", [el("p", { class: "muted" }, why)]);
 }
 
-function windowsRows(c, info, v) {
-  const share = c.wslVm === null ? "" : `WSL VM ${pct(c.wslVm / info.cores)} of the machine`;
+/** How many programs the CPU row names by the kernel time they spend. */
+const KERNEL_NAMED = 4;
+
+/**
+ * Under the CPU row: Windows' busy time split into programs, Windows' own
+ * kernel and the WSL VM (which Windows counts as kernel time), as a bar over
+ * the machine, and the programs that spend most time in the kernel.
+ */
+function cpuBelow(split, top) {
+  if (split === null) return [];
+  const bar = el(
+    "div",
+    { class: "stack cpusplit" },
+    segment("k-host", "Programs", split.user, 100, pct),
+    segment("k-kernel", "Windows' kernel", split.kernel, 100, pct),
+    segment("k-containers", "WSL VM", split.vm, 100, pct),
+  );
+  const named = top
+    .filter((p) => p.kernel >= 0.05)
+    .sort((a, b) => b.kernel - a.kernel)
+    .slice(0, KERNEL_NAMED)
+    .map((p) => `${programName(p.name)} ${cores(p.kernel)}`);
+  const kernel =
+    named.length === 0 ? null : el("small", {}, `Most kernel time: ${named.join(" · ")}`);
+  return [bar, kernel];
+}
+
+/** What the CPU row says under its reading: the split where Windows gave it, else the VM's share. */
+function cpuSmall(c, info, split) {
+  if (split === null)
+    return c.wslVm === null ? "" : `WSL VM ${pct(c.wslVm / info.cores)} of the machine`;
+  const vm = split.vm === null ? "" : ` · WSL VM ${pct(split.vm)}`;
+  return `Of the machine: programs ${pct(split.user)} · Windows' kernel ${pct(split.kernel)}${vm}`;
+}
+
+/** The paging row's reading: page-file writes, and the trimming that never reaches the page file. */
+function pagingRead(c, compressed) {
+  const faults =
+    c.transitionFaults === null ? "" : ` · ${perSecond(c.transitionFaults)} transition faults`;
+  const small = [
+    `Page file ${pct(c.pageFile ?? 0)} used`,
+    c.demandZeroFaults === null ? null : `${perSecond(c.demandZeroFaults)} demand-zero faults`,
+    compressed === null ? null : `compression store ${bytes(compressed)}`,
+  ];
+  return {
+    main: `${rate((c.pagesOut ?? 0) * 4096)} to the page file${faults}`,
+    small: small.filter((part) => part !== null).join(" · "),
+  };
+}
+
+function windowsRows(windows, top) {
+  const { counters: c, info, verdicts: v, split, compressed } = windows;
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
+  const paging = pagingRead(c, compressed);
   return [
     metric(
       v.cpu,
       "CPU",
       // The hypervisor's count where there is one: it alone sees the whole machine.
       `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${c.queue ?? 0} waiting`,
-      share,
+      cpuSmall(c, info, split),
       spark(history("windows", "cpu"), 100),
+      cpuBelow(split, top),
     ),
     metric(
       v.memory,
@@ -105,17 +164,11 @@ function windowsRows(c, info, v) {
       `${rate(c.diskRead ?? 0)} read · ${rate(c.diskWrite ?? 0)} write · queue ${(c.diskQueue ?? 0).toFixed(1)}`,
       spark(history("windows", "disk")),
     ),
-    metric(
-      "neutral",
-      "Paging",
-      `${rate((c.pagesOut ?? 0) * 4096)} to the page file`,
-      `Page file ${pct(c.pageFile ?? 0)} used`,
-      spark([]),
-    ),
+    metric("neutral", "Paging", paging.main, paging.small, spark([])),
   ];
 }
 
-function windowsCard(windows) {
+function windowsCard(windows, top) {
   const info = windows.info;
   const detail =
     info === null ? "" : `${info.name} · ${info.cores} cores · ${bytes(info.memTotal)}`;
@@ -123,7 +176,7 @@ function windowsCard(windows) {
     const why = windows.error !== "" ? windows.error : "Starting typeperf, a few seconds…";
     return hostCard("Windows", detail, [el("p", {}, why)]);
   }
-  return hostCard("Windows", detail, windowsRows(windows.counters, info, windows.verdicts));
+  return hostCard("Windows", detail, windowsRows(windows, top));
 }
 
 function topRow(where, what, cpu, memory, disk) {
@@ -163,7 +216,7 @@ function drawMachine(state) {
   $("headline").textContent = state.headline.text;
   drawWhere(state);
   const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
-  if (state.windows !== null) cards.push(windowsCard(state.windows));
+  if (state.windows !== null) cards.push(windowsCard(state.windows, state.top.windows));
   $("hosts").replaceChildren(...cards);
   // Full width, under the WSL and Windows cards, not a third in their grid.
   $("gpu")?.remove();
