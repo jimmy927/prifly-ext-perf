@@ -355,7 +355,7 @@ describe("reading the table on a host on Windows itself", () => {
     await settle();
     expect(children).toHaveLength(0);
     expect(tables.procs).toHaveLength(0);
-    expect(wsl.absent).toBe("WSL is not running on this host.");
+    expect(wsl.absent).toStartWith("WSL is not running on this host; asking again at ");
   });
 
   test("before WSL's first read nothing is asked, and nothing breaks", async () => {
@@ -406,7 +406,7 @@ describe("reading the table on a host on Windows itself", () => {
     children[0]?.end("exit 1: The Windows Subsystem for Linux instance has terminated.");
     await settle();
     expect(tables.procs).toHaveLength(0);
-    expect(wsl.absent).toStartWith("WSL: shell ended");
+    expect(wsl.absent).toStartWith("WSL's shell ended (exit 1");
     expect(logged).toEqual([]);
   });
 

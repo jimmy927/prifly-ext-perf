@@ -273,10 +273,16 @@ its output goes through the same parsers. It is started only while
 `wsl.exe --list --running` names a distro (asked once a minute while it names
 none), so the extension never boots the WSL VM; once started, though, it keeps
 the VM from shutting down while idle. When it ends (`wsl --shutdown`, say) or a
-read fails or takes over 10 s, WSL counts as gone: the hour of WSL history kept
-so far is dropped, as it says nothing about now, and `wsl.exe` is asked again a
-minute later. With no WSL running, the WSL card says why and the window shows
-Windows alone.
+read fails or takes over 10 s (the process-table read too), WSL counts as gone:
+the hour of WSL history kept so far is dropped, as it says nothing about now,
+the shell's `wsl.exe` is killed and let go of without waiting for it to exit,
+and `wsl.exe --list --running` is asked again a minute later; that too gets 10 s
+before it counts as a no. Every `wsl.exe` call is bounded this way, so when
+WSL's interop goes stale (`UtilAcceptVsock: accept4 failed 110`, a `wsl.exe`
+that hangs) the reads come back on their own once WSL answers again. With no
+WSL read, the WSL card says why in plain words and when it asks again ("WSL did
+not answer for 10 s; asking again at 14:05:30."), and the window shows Windows
+alone.
 
 Its sessions still run inside WSL, under prifly's agent there
 (`prifly-agent`): each `claude` hangs under a `prifly-agent relay <relays dir>

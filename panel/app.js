@@ -81,9 +81,12 @@ function linuxCard(linux) {
   ]);
 }
 
-/** WSL where it is not read (a host on Windows itself, with no WSL running): why, in place of its rows. */
+/**
+ * WSL where it is not read (a host on Windows itself, with no WSL running or
+ * WSL not answering): why, and when it is asked again, in place of its rows.
+ */
 function absentCard(why) {
-  return hostCard("WSL", "not on this host", [el("p", { class: "muted" }, why)]);
+  return hostCard("WSL", "not read now", [el("p", { class: "muted" }, why)]);
 }
 
 /** How many programs the CPU row names by the kernel time they spend. */
