@@ -29,6 +29,8 @@ export type Holders = {
   groups: Holder[];
   committed: number | null;
   pools: { paged: number; nonpaged: number } | null;
+  /** Every process's commit added up. */
+  inProcesses: number;
   shared: number | null;
   error: string;
 };
@@ -210,7 +212,7 @@ export function holdersOf(out: string, hostPid: number | null): Holders {
   if (rows.size === 0) {
     const why = /^listerr\|(.*)$/m.exec(out)?.[1]?.trim();
     const error = `Windows' process list could not be read${why ? `: ${why}` : "."}`;
-    return { groups: [], committed, pools, shared: null, error };
+    return { groups: [], committed, pools, shared: null, inProcesses: 0, error };
   }
   const { named, programs } = grouped(rows, out, hostPid);
   const kept = folded(programs);
@@ -218,9 +220,34 @@ export function holdersOf(out: string, hostPid: number | null): Holders {
   const groups = [...named, ...kept].sort(byCommit);
   if (more !== undefined) groups.push(more);
   const byProcesses = [...rows.values()].reduce((sum, row) => sum + row.commit, 0);
+  const shared = memory === null ? null : unheld(memory.committed, byProcesses, memory);
+  return { groups, committed, pools, shared, inProcesses: byProcesses, error: "" };
+}
+
+/** What is committed but in no process's own count and no pool, never below 0. */
+const unheld = (
+  committed: number,
+  inProcesses: number,
+  pools: { paged: number; nonpaged: number },
+) => Math.max(0, committed - inProcesses - pools.paged - pools.nonpaged);
+
+/**
+ * The list with the pools the Memory row shows (`poolPaged` and
+ * `poolNonpaged`, averaged over the page's window), so that the two never
+ * disagree; the shared row is worked out again from them. Where typeperf gave
+ * no pool sizes, the list keeps its own read.
+ */
+export function withPools(
+  holders: Holders,
+  counters: { poolPaged: number | null; poolNonpaged: number | null } | null,
+): Holders {
+  if (counters === null || counters.poolPaged === null || counters.poolNonpaged === null) {
+    return holders;
+  }
+  const pools = { paged: counters.poolPaged, nonpaged: counters.poolNonpaged };
   const shared =
-    memory === null
+    holders.committed === null || holders.error !== ""
       ? null
-      : Math.max(0, memory.committed - byProcesses - memory.paged - memory.nonpaged);
-  return { groups, committed, pools, shared, error: "" };
+      : unheld(holders.committed, holders.inProcesses, pools);
+  return { ...holders, pools, shared };
 }

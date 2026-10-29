@@ -26,28 +26,26 @@ import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf
 import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { historyOf } from "./history";
-import { type Holders, holdersOf } from "./holders";
+import { holdersOf, withPools } from "./holders";
 import { HOST } from "./host";
 import { McpConfig } from "./mcp";
-import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
-import {
-  ownerIdsOf,
-  priflyReport,
-  type ToolUse,
-  toolUseOf,
-  topLinux,
-  type Usage,
-  usageOf,
-} from "./prifly";
+import { newNannyMemory } from "./nanny";
+import { nannyStep } from "./nanny-step";
+import { priflyReport, topLinux, type Usage, usageOf } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
+import { open, type State } from "./state";
 import { Tables } from "./tables";
 import {
   headline,
   linuxVerdicts,
+  type MemoryCheck,
+  memoryReasons,
+  type Place,
   type Tone,
   type Verdicts,
+  windowsMemoryChecks,
   windowsVerdicts,
   withGreyWords,
 } from "./verdict";
@@ -56,11 +54,12 @@ import {
   stopPowershell,
   type WindowsCounters,
   type WindowsInfo,
-  WindowsSampler,
   windowsInfo,
   windowsTools,
 } from "./windows";
-import { topProcesses, type WindowsProcess } from "./windows-top";
+import { compressionGrowth, parsePoolTags, poolTags } from "./windows-memory";
+import { WindowsSampler } from "./windows-sampler";
+import { topProcesses } from "./windows-top";
 import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
 
@@ -73,59 +72,22 @@ const CHIP_WINDOW = 10;
  * Linux and Windows ones (a process table is hundreds of entries a second).
  */
 const PROCS_KEEP = 310;
-/** While only the nanny reads them: every 5 s, 30 s kept, and averaged over the 30 s. */
-const NANNY_EVERY = 5_000;
-const NANNY_KEEP = 30;
-/** A table older than this is from before a gap, and says nothing about now. */
-const NANNY_STALE = 15_000;
-/** The fewest seconds a table must span for its rates to mean anything. */
-const NANNY_MIN_SPAN = 3;
-/** The window asks every second; it counts as open while it asked within this. */
-const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
+/** Seconds of compression store readings kept: a minute's growth, and some over. */
+const COMPRESSION_KEEP = 300;
+/** The kernel pool tags are read at most this often, and only while the window is open. */
+const POOLS_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
-
-type State = {
-  api: ExtensionApi;
-  /** The last hour of reads, one a second; empty while a host on Windows has no WSL to read. */
-  linux: LinuxRaw[];
-  /** On a host on Windows itself, what reads the WSL VM; null where Linux is this host's `/proc`. */
-  wsl: WslLinux | null;
-  /**
-   * The process tables (the last five minutes, one a second, while the window
-   * is open), Docker's containers, and a host on Windows' own processes.
-   */
-  tables: Tables;
-  windows: WindowsSampler | null;
-  info: WindowsInfo | null;
-  topWindows: WindowsProcess[];
-  /** The memory compression store's bytes, read with `topWindows`; null until read, or where it cannot be. */
-  compressed: number | null;
-  /** Who holds Windows' memory, read with `topWindows` (`holders.ts`); null until read. */
-  holders: Holders | null;
-  topWindowsAt: number;
-  /** The graphics card, read while the window is open (`gpu-live.ts`). */
-  gpu: GpuMonitor;
-  cloud: { recent: number; total: number } | null;
-  cloudAt: number;
-  askedAt: number;
-  /** Seconds of the window it asked for last. */
-  askedWindow: number;
-  /** What the status bar and the session chips show now, as a key: sent again only when it changes. */
-  chip: string;
-  /** What the nanny remembers between seconds (`nanny.ts`). */
-  nanny: NannyMemory;
-  /** Each session's tools, from the latest process table the nanny averaged. */
-  nannyUse: { at: number; use: Map<string, ToolUse>; unowned: number } | null;
-  /** The sessions with a chip now, to log only when they change. */
-  chipped: string;
-};
 
 let state: State | null = null;
 
-/** Windows' verdicts for counters already averaged. */
-function windowsVerdictsOf(info: WindowsInfo | null, c: WindowsCounters | null): Verdicts | null {
-  return c === null || info === null ? null : windowsVerdicts(c, info);
+/** Windows' verdicts for counters already averaged, and the memory checks behind its memory colour. */
+function windowsJudgedOf(
+  info: WindowsInfo | null,
+  c: WindowsCounters | null,
+): { verdicts: Verdicts; checks: MemoryCheck[] } | null {
+  if (c === null || info === null) return null;
+  return { verdicts: windowsVerdicts(c, info), checks: windowsMemoryChecks(c, info) };
 }
 
 function windowsAverage(current: State, seconds: number, endIndex?: number) {
@@ -139,9 +101,16 @@ function linuxName(current: State): string {
   return current.windows === null && current.wsl === null ? "Linux" : "WSL";
 }
 
-function places(current: State, linux: Verdicts | null, windows: Verdicts | null) {
-  const out = linux === null ? [] : [{ name: linuxName(current), verdicts: linux }];
-  if (windows !== null) out.push({ name: "Windows", verdicts: windows });
+function places(
+  current: State,
+  linux: Verdicts | null,
+  windows: ReturnType<typeof windowsJudgedOf>,
+): Place[] {
+  const out: Place[] = linux === null ? [] : [{ name: linuxName(current), verdicts: linux }];
+  if (windows !== null) {
+    const why = memoryReasons(windows.checks).map((check) => check.text);
+    out.push({ name: "Windows", verdicts: windows.verdicts, memoryReasons: why });
+  }
   return out;
 }
 
@@ -154,9 +123,10 @@ const ICON_TONE: Record<Tone, Decoration["tone"]> = {
 /** The status-bar item: the Performance button, coloured by the worst of the three. */
 function statusItem(current: State, linux: Verdicts | null): Decoration {
   const windows = windowsAverage(current, CHIP_WINDOW);
-  const judged = places(current, linux, windowsVerdictsOf(current.info, windows?.value ?? null));
+  const judged = places(current, linux, windowsJudgedOf(current.info, windows?.value ?? null));
   const { tone, text } = headline(judged);
-  const label = tone === "good" ? "Fine" : (text.split(".")[0] ?? text);
+  // The first sentence, without the reasons after its colon (whose "4.7 GB" has a dot of its own).
+  const label = tone === "good" ? "Fine" : (text.split(/: |\. |\.$/)[0] ?? text);
   const details = judged.map(
     ({ name, verdicts }) =>
       `${name}: CPU ${verdicts.cpu}, memory ${verdicts.memory}, disk ${verdicts.disk}`,
@@ -195,10 +165,6 @@ function showAll(
   current.api.show(chips, [item]);
 }
 
-function open(current: State): boolean {
-  return Date.now() - current.askedAt < OPEN_FOR;
-}
-
 function refreshWhileOpen(current: State): void {
   const now = Date.now();
   current.tables.readAll(PROCS_KEEP, now);
@@ -209,6 +175,9 @@ function refreshWhileOpen(current: State): void {
       .then((top) => {
         current.topWindows = top.processes;
         current.compressed = top.compressed;
+        if (top.compressed !== null) {
+          keep(current.compressions, { at: Date.now(), bytes: top.compressed }, COMPRESSION_KEEP);
+        }
         // A host on Windows itself is a Windows process: its own, and its window, are told apart.
         current.holders = holdersOf(top.out, current.tables.native ? process.pid : null);
       })
@@ -219,8 +188,23 @@ function refreshWhileOpen(current: State): void {
           committed: null,
           pools: null,
           shared: null,
+          inProcesses: 0,
           error: `Windows' process list could not be read: ${String(error)}`,
         };
+      });
+  }
+  const latest = current.windows?.history.at(-1);
+  // Only while the page shows pool sizes: with no pool counter there is no pools line to drill into.
+  if (latest !== undefined && latest.poolPaged !== null && now - current.poolsAt > POOLS_EVERY) {
+    current.poolsAt = now;
+    poolTags()
+      .then((out) => {
+        const tags = parsePoolTags(out);
+        current.pools = { tags, error: tags === null ? "Windows gave no pool tags" : "" };
+      })
+      .catch((error: unknown) => {
+        current.api.log("pool_tags_failed", { error: String(error) });
+        current.pools = { tags: null, error: String(error) };
       });
   }
   if (now - current.cloudAt > CLOUD_EVERY) {
@@ -236,98 +220,6 @@ function refreshWhileOpen(current: State): void {
       })
       .catch((error: unknown) => current.api.log("cloud_failed", { error: String(error) }));
   }
-}
-
-/**
- * While WSL's CPU or memory is not green and the window is closed, nobody else
- * reads the process table: read it every 5 s, and keep 30 s of it. After a
- * gap the old tables would stretch the average over the gap, so they go.
- */
-function readForNanny(current: State, verdicts: Verdicts, now: number): void {
-  if (verdicts.cpu === "good" && verdicts.memory === "good") return;
-  const procs = current.tables.procs;
-  const last = procs.at(-1);
-  if (last !== undefined && now - last.at < NANNY_EVERY - 250) return;
-  if (last !== undefined && now - last.at > NANNY_STALE) procs.length = 0;
-  current.tables.readProcs(NANNY_KEEP);
-}
-
-/**
- * Each session's tools, and the cores no session owns, from the process table
- * averaged over its last 30 s. Worked out once per table, not once a second.
- * Null while the table is missing, stale or too short for its rates to mean
- * anything: a nanny that cannot see says nothing.
- */
-function nannyUse(current: State, now: number): State["nannyUse"] {
-  const last = current.tables.procs.at(-1);
-  if (last === undefined || now - last.at > NANNY_STALE) return null;
-  if (current.nannyUse?.at === last.at) return current.nannyUse;
-  const procs = averageProcs(current.tables.procs, NANNY_KEEP);
-  if (procs === null || procs.covered < NANNY_MIN_SPAN) return null;
-  // The machine's busy cores over the same stretch, less every process some session owns:
-  // what is left is Docker, Windows-side work, or something started by hand.
-  const linux = averageLinux(current.linux, procs.covered);
-  const owners = ownerIdsOf(procs.value);
-  const owned = procs.value.reduce((sum, p) => sum + (owners.has(p.pid) ? p.cpu : 0), 0);
-  const busy = linux === null ? 0 : (linux.value.busy * linux.value.cores) / 100;
-  current.nannyUse = {
-    at: last.at,
-    use: toolUseOf(procs.value, current.api.sessions(), new McpConfig()),
-    unowned: Math.max(0, busy - owned),
-  };
-  return current.nannyUse;
-}
-
-/** The sessions the host knows that run tools, with their state as it is now. */
-function nannySessions(current: State, now: number): { sessions: NannySession[]; unowned: number } {
-  const data = nannyUse(current, now);
-  if (data === null) return { sessions: [], unowned: 0 };
-  const sessions = current.api.sessions().flatMap((session) => {
-    const use = data.use.get(session.id);
-    return use === undefined
-      ? []
-      : [{ id: session.id, title: session.title, state: session.state, ...use }];
-  });
-  return { sessions, unowned: data.unowned };
-}
-
-/** Tells a session to ease off. A failure is logged, never thrown: the nanny must go on. */
-async function sendNotice(current: State, notice: Notice): Promise<void> {
-  current.api.log("nanny_notice", { session: notice.session, text: notice.text });
-  try {
-    const { delivered } = await current.api.prompt(notice.session, notice.text);
-    if (!delivered) current.api.log("nanny_notice_failed", { session: notice.session });
-  } catch (error) {
-    current.api.log("nanny_notice_failed", { session: notice.session, error: String(error) });
-  }
-}
-
-/** One second of the nanny: judge, carry out what it decided, and return the chips to show. */
-function nannyStep(current: State, linux: LinuxSample, verdicts: Verdicts) {
-  const now = Date.now();
-  if (!open(current)) readForNanny(current, verdicts, now);
-  const { sessions, unowned } = nannySessions(current, now);
-  const decision = decide(
-    current.nanny,
-    {
-      verdicts,
-      psi: { cpu: linux.cpu?.some ?? 0, memory: linux.memory?.full ?? 0 },
-      cores: linux.cores,
-      memTotal: linux.memTotal,
-      sessions,
-      unowned,
-    },
-    now,
-  );
-  current.nanny = decision.memory;
-  for (const notice of decision.notices) void sendNotice(current, notice);
-  if (decision.notify !== null) {
-    const { text, session } = decision.notify;
-    current.api.log("nanny_notify", { text, session: session ?? null });
-    const tone = "warning";
-    current.api.notify(text, session === undefined ? { tone } : { tone, session });
-  }
-  return decision.chips;
 }
 
 function tick(current: State): void {
@@ -387,8 +279,11 @@ export function activate(api: ExtensionApi): () => void {
     info: null,
     topWindows: [],
     compressed: null,
+    compressions: [],
     holders: null,
     topWindowsAt: 0,
+    pools: null,
+    poolsAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
     cloud: null,
     cloudAt: 0,
@@ -470,7 +365,7 @@ function priflyOf(current: State, seconds: number) {
 function windowsStatus(
   current: State,
   counters: WindowsCounters | null,
-  verdicts: Verdicts | null,
+  judged: ReturnType<typeof windowsJudgedOf>,
 ) {
   if (current.windows === null) return null;
   return {
@@ -480,9 +375,24 @@ function windowsStatus(
     split:
       counters === null || current.info === null ? null : cpuSplit(counters, current.info.cores),
     compressed: current.compressed,
-    verdicts,
+    // Bytes a minute over the last minute; null before a minute of reads.
+    compressionGrowth: compressionGrowth(current.compressions),
+    verdicts: judged?.verdicts ?? null,
+    // Every memory check, green ones too: the Memory row shows why it has its colour.
+    memoryChecks: judged?.checks ?? [],
+    pools: current.pools,
     error: current.windows.error,
   };
+}
+
+/**
+ * Who holds Windows' memory: null without Windows, `{reading: true}` until its
+ * first read. Its pools are the Memory row's (`counters`), so the two agree.
+ */
+function holdersStatus(current: State, counters: WindowsCounters | null) {
+  if (current.windows === null) return null;
+  if (current.holders === null) return { reading: true };
+  return withPools(current.holders, counters);
 }
 
 /** Everything the page shows, each number averaged over the last `seconds`. */
@@ -492,7 +402,7 @@ function status(current: State, seconds: number) {
   if (linux === null && windows === null) throw new Error("No sample yet.");
   const { procs, containers, report, priflyWindows, others } = priflyOf(current, seconds);
   const linuxBlock = linuxStatus(current, linux?.value ?? null);
-  const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
+  const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {
@@ -508,8 +418,7 @@ function status(current: State, seconds: number) {
     windows: windowsStatus(current, windows?.value ?? null, windowsJudged),
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
-    // Who holds Windows' memory: null without Windows, `{reading: true}` until its first read.
-    holders: current.windows === null ? null : (current.holders ?? { reading: true }),
+    holders: holdersStatus(current, windows?.value ?? null),
     others,
     prifly: report,
     // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.
@@ -536,6 +445,8 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
     current.tables.clear();
+    // The store's growth is read only while open: a minute from before the gap says nothing now.
+    current.compressions.length = 0;
     refreshWhileOpen(current);
   }
   return status(current, seconds);

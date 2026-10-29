@@ -28,6 +28,15 @@ export type ShellChild = {
   onExit(listener: (reason: string) => void): void;
 };
 
+/** A script that printed no end marker in time; the shell it ran in is killed, not waited for. */
+export class ScriptTimeout extends Error {
+  readonly ms: number;
+  constructor(ms: number) {
+    super(`script timed out after ${ms} ms`);
+    this.ms = ms;
+  }
+}
+
 type Call = {
   script: string;
   timeout: number;
@@ -78,7 +87,7 @@ export class ScriptShell {
     }
     const id = `${Date.now().toString(36)}-${++this.counter}`;
     const timer = setTimeout(() => {
-      this.discard(new Error(`script timed out after ${call.timeout} ms`), call);
+      this.discard(new ScriptTimeout(call.timeout), call);
     }, call.timeout);
     this.running = { call, id, timer };
     try {

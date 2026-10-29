@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { holdersOf, isTestRun } from "../holders";
+import { holdersOf, isTestRun, withPools } from "../holders";
 
 /** `gb` gigabytes, in whole MiB so that sums are exact. */
 const GB = (gb: number) => Math.round(gb * 1024) * 2 ** 20;
@@ -130,6 +130,19 @@ describe("who holds Windows' memory", () => {
     expect(holders.shared).toBe(GB(72) - inProcesses - GB(3) - GB(3.4));
     expect(holders.shared).toBeGreaterThan(0);
     expect(holders.error).toBe("");
+  });
+
+  test("the pools are the Memory row's where typeperf gives them, and shared follows", () => {
+    const row = withPools(holders, { poolPaged: GB(4), poolNonpaged: GB(2) });
+    expect(row.pools).toEqual({ paged: GB(4), nonpaged: GB(2) });
+    expect(row.shared).toBe(GB(72) - holders.inProcesses - GB(4) - GB(2));
+    expect(row.groups).toBe(holders.groups);
+    // Without both counters the list keeps its own read.
+    expect(withPools(holders, { poolPaged: GB(4), poolNonpaged: null })).toBe(holders);
+    expect(withPools(holders, null)).toBe(holders);
+    // An unreadable list has no shared row, whatever the pools.
+    const broken = holdersOf("listerr|denied", HOST);
+    expect(withPools(broken, { poolPaged: GB(4), poolNonpaged: GB(2) }).shared).toBeNull();
   });
 
   test("what is shared never goes below 0 when the processes add up past the total", () => {

@@ -5,10 +5,11 @@
 
 import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
-import { $, bytes, cores, el, pct, perSecond, programName, rate, spark } from "./format.js";
+import { $, bytes, cores, el, pct, programName, rate, spark } from "./format.js";
 import { gpuCard } from "./gpu.js";
 import { drawHolders } from "./holders.js";
 import { drawMcp } from "./mcp.js";
+import { memoryChecks, memoryRead, pagingRead, poolsRead } from "./memory.js";
 import { drawWhere, segment } from "./where.js";
 
 let last = null;
@@ -82,9 +83,12 @@ function linuxCard(linux) {
   ]);
 }
 
-/** WSL where it is not read (a host on Windows itself, with no WSL running): why, in place of its rows. */
+/**
+ * WSL where it is not read (a host on Windows itself, with no WSL running or
+ * WSL not answering): why, and when it is asked again, in place of its rows.
+ */
 function absentCard(why) {
-  return hostCard("WSL", "not on this host", [el("p", { class: "muted" }, why)]);
+  return hostCard("WSL", "not read now", [el("p", { class: "muted" }, why)]);
 }
 
 /** How many programs the CPU row names by the kernel time they spend. */
@@ -122,25 +126,13 @@ function cpuSmall(c, info, split) {
   return `Of the machine: programs ${pct(split.user)} · Windows' kernel ${pct(split.kernel)}${vm}`;
 }
 
-/** The paging row's reading: page-file writes, and the trimming that never reaches the page file. */
-function pagingRead(c, compressed) {
-  const faults =
-    c.transitionFaults === null ? "" : ` · ${perSecond(c.transitionFaults)} transition faults`;
-  const small = [
-    `Page file ${pct(c.pageFile ?? 0)} used`,
-    c.demandZeroFaults === null ? null : `${perSecond(c.demandZeroFaults)} demand-zero faults`,
-    compressed === null ? null : `compression store ${bytes(compressed)}`,
-  ];
-  return {
-    main: `${rate((c.pagesOut ?? 0) * 4096)} to the page file${faults}`,
-    small: small.filter((part) => part !== null).join(" · "),
-  };
-}
-
 function windowsRows(windows, top) {
   const { counters: c, info, verdicts: v, split, compressed } = windows;
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
-  const paging = pagingRead(c, compressed);
+  const paging = pagingRead(c, compressed, windows.compressionGrowth);
+  const memory = memoryRead(c, info);
+  const checks = windows.memoryChecks ?? [];
+  const pools = poolsRead(c, checks, windows.pools ?? null);
   return [
     metric(
       v.cpu,
@@ -154,10 +146,12 @@ function windowsRows(windows, top) {
     metric(
       v.memory,
       "Memory",
-      `${bytes((c.availableMB ?? 0) * 2 ** 20)} available · ${pct(c.committed ?? 0)} committed`,
-      `of ${bytes(info.memTotal)}; the WSL VM's share counts as used`,
+      memory.main,
+      memory.small,
       spark(history("windows", "memory"), 100),
+      memoryChecks(checks),
     ),
+    pools && metric(pools.tone, "Kernel pools", pools.main, pools.small, spark([]), pools.below),
     metric(
       v.disk,
       "Disk I/O",

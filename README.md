@@ -43,15 +43,16 @@ the last 8 s*).
 ## Machine
 
 The headline names whatever is short or out, worst first. Under it, WSL and
-Windows each get four rows, each with a colour, the reading, what it means,
-and a sparkline of the averages:
+Windows each get their rows, each with a colour, the reading, what it means,
+and a sparkline of the averages (Windows' memory line is % of commit used):
 
 | | WSL | Windows |
 |---|---|---|
 | **CPU** | tasks ready to run against cores, and how long they waited for one | % of the machine busy, the processor queue, and a bar of what the busy time is: programs (user time), Windows' own kernel, and the WSL VM; under it the programs that spend most time in the kernel |
-| **Memory** | available of total, time stalled waiting for memory, swap | available, committed, and the total |
+| **Memory** | available of total, time stalled waiting for memory, swap | commit charge against the commit limit (*68 of 71 GB committed · 96 %*), available memory under it, and every check the colour comes from, each with its own dot: % of commit used, pages trimmed a second, page-file writes, available, and both kernel pools. Green, it still shows them, so you can see why it is fine |
+| **Kernel pools** | — | the paged and non-paged pool sizes, orange over 2 GB with why; under them the biggest pool tags (tag, pool, bytes, allocations live, and what the tag is where it is known), open by itself while a pool is over 2 GB |
 | **Disk** | read and write rates, time stalled waiting for disk | % busy, time per request, rates, queue |
-| last row | load average, uncoloured | writes to the page file, transition and demand-zero faults a second, how full the page file is, and the size of the memory compression store; uncoloured |
+| last row | load average, uncoloured | writes to the page file, transition and demand-zero faults a second, how full the page file is, and the size of the memory compression store with how fast it grew over the last minute (*1.0 GB, +120 MB/min*); uncoloured |
 
 A reading Windows could not give (a counter missing, or a value that cannot
 be right) is left out of its row rather than shown as 0. Without WSL there is
@@ -103,7 +104,8 @@ their memory stays committed. Trimmed processes look small: on 2026-10-29
 and the page file must back between them, wherever it is now.
 
 Two rows are held by no process: **Kernel pools**, Windows' own paged and
-non-paged pool, and **Shared sections, page tables and the rest**, what is
+non-paged pool (the same sizes as the Kernel pools row above, where its tags
+are), and **Shared sections, page tables and the rest**, what is
 committed less every process's commit and the pools (never below 0): shared
 memory such as file mappings, the page tables, and drivers' allocations. On
 2026-10-29, of 72 GB committed, the pools were about 6.4 GB and the rest about
@@ -167,10 +169,11 @@ the GPU open it is counted into them. Read only while the window is open.
 | WSL memory: available | under 20 % | under 10 % |
 | WSL disk: every task stalled on disk (PSI `io full`) | 5 % | 20 % |
 | Windows CPU: processor queue per core | 1 | 2 |
-| Windows memory: committed | 90 % | 97 % |
+| Windows memory: committed, of the commit limit (RAM plus the page file) | 90 % | 97 % |
 | Windows memory: writes to the page file | 1 MB/s | 10 MB/s |
-| Windows memory: transition faults, pages trimmed out of programs and faulted back (provisional) | 20,000/s | 80,000/s |
+| Windows memory: transition faults, pages trimmed out of programs and faulted back (from one overloaded recording, see below) | 30,000/s | 80,000/s |
 | Windows memory: available | under 10 % or 2 GB | under 5 % or 1 GB |
+| Windows memory: paged or non-paged kernel pool | over 2 GB | — |
 | Windows disk: time per read or write | 15 ms | 25 ms |
 
 On Linux the colours come from [pressure stall
@@ -183,22 +186,49 @@ the cores stands in for CPU.
 
 Windows memory is judged mainly by commit charge (can Windows still hand
 memory out?), by writes to the page file (is it pushing memory out to make
-room?) and by transition faults (is it squeezing programs to make room?). Low
-available memory counts only when it is truly low. The WSL VM keeps its own
-file cache, which Windows counts as used, so 18 % available with 70 %
-committed and no paging is a calm machine.
+room?), by transition faults (is it squeezing programs to make room?) and by
+the kernel pools (is a driver or service leaking?). Low available memory
+counts only when it is truly low. The WSL VM keeps its own file cache, which
+Windows counts as used, so 18 % available with 70 % committed and no paging
+is a calm machine. When memory is orange or red, the headline names why:
+*Out of memory in Windows: Windows is trimming 150k pages a second, 96 % of
+commit used, kernel paged pool 4.7 GB, over 2 GB: a driver or service is
+leaking.*
+
+Commit charge is the memory row's headline because it is what runs out.
+Every allocation a program makes is promised against the commit limit, RAM
+plus the page file, whether or not it is ever touched. Near the limit an
+allocation fails, or Windows must first grow the page file. Available memory
+does not show this: compression and trimming keep it looking healthy (7 GB of
+47 GB at 88 % committed) while the machine is already short.
 
 Writes to the page file alone miss most of the squeezing. When memory runs
 short, Windows first trims pages out of programs' working sets and compresses
 them into the memory compression store, a process of its own that lives in
 RAM and never writes to the page file. Each trimmed page a program touches
-again is a transition fault: cheap one at a time, but at 138,000 a second, with
-92 % committed and the page file untouched, the machine was slow (measured on
-the machine this was written on, 2026-10-29). So the transition faults are the
-signal, and their thresholds are provisional until the machine's idle and
-normal readings are in. Demand-zero faults (fresh zeroed pages, often a
-program allocating fast) and the store's size are shown beside them, without
-a colour.
+again is a transition fault: cheap one at a time, but at 100,000–190,000 a
+second the machine was slow, with 88–98 % committed and the page file
+untouched at the median (measured on the machine this was written on,
+2026-10-29). So the transition faults are the signal. Demand-zero faults
+(fresh zeroed pages, often a program allocating fast) and the store's size and
+growth are shown beside them, without a colour.
+
+The trimming thresholds come from the one recording there is, made while the
+machine was overloaded: 17:27–17:48, every 5 s, 240 samples. Its transition
+faults had a 5th percentile of 55,000 a second, 25th 89,000, median 117,000,
+75th 143,000 and 95th 168,000. Orange, at 30,000, sits below the 5th, so even
+the mildest minute of that overload is orange; red, at 80,000, below the 25th.
+There is no calm reading yet: WSL's way into Windows died at 17:48, so what a
+calm machine runs at is not known, and the thresholds may move once it is.
+
+The kernel's pools are its own heaps: paged (may go to the page file) and
+non-paged (always in RAM, for drivers). A few hundred MB each is usual. Over
+2 GB is a leak in a driver or service, and orange. On the machine this was
+written on the paged pool reached 4.7 GB, 1.4 GB of it tag `Toke` (security
+tokens), with 695,000 tokens live: a service that opens tokens and never
+closes them. The biggest tags under the pools row name the culprit's tag; a
+tag's owner can be found with `findstr /m /l <tag> C:\Windows\System32\drivers\*.sys`
+or Microsoft's `pooltag.txt`.
 
 Windows counts all of the WSL VM's CPU as kernel time: the guest's Linux
 programs too, not only Windows' kernel working for the VM
@@ -299,8 +329,16 @@ you are.
   which the Process counters leave out), and **who holds Windows' memory**
   (every process from `Win32_Process` with its parent, command line and
   working set, its commit from `Get-Process`'s `PrivateMemorySize64`, and the
-  committed bytes and the two pools from `Win32_PerfFormattedData_PerfOS_Memory`),
-  all from one script in the shared PowerShell every 10 s, and **cloud
+  committed bytes from `Win32_PerfFormattedData_PerfOS_Memory`), all from one
+  script in the shared PowerShell every 10 s; the store's growth is worked out
+  over the last minute of those reads. The list's pools are typeperf's pool
+  counters, averaged as the Memory row's are, so both show the same sizes
+  (the PowerShell's own pool read stands in only where typeperf has none). The
+  **kernel pool tags** come from the same PowerShell every 10 s,
+  through `NtQuerySystemInformation(SystemPoolTagInformation)`, which needs no
+  admin (a little C#, compiled once per PowerShell); tags under 1 MB are left
+  out and the eight biggest shown. If that read fails, the pool sizes still
+  show and the list says why. And **cloud
   sessions** (prifly's accounts, every 5 min) are read only while the window
   is open.
 
@@ -317,10 +355,16 @@ its output goes through the same parsers. It is started only while
 `wsl.exe --list --running` names a distro (asked once a minute while it names
 none), so the extension never boots the WSL VM; once started, though, it keeps
 the VM from shutting down while idle. When it ends (`wsl --shutdown`, say) or a
-read fails or takes over 10 s, WSL counts as gone: the hour of WSL history kept
-so far is dropped, as it says nothing about now, and `wsl.exe` is asked again a
-minute later. With no WSL running, the WSL card says why and the window shows
-Windows alone.
+read fails or takes over 10 s (the process-table read too), WSL counts as gone:
+the hour of WSL history kept so far is dropped, as it says nothing about now,
+the shell's `wsl.exe` is killed and let go of without waiting for it to exit,
+and `wsl.exe --list --running` is asked again a minute later; that too gets 10 s
+before it counts as a no. Every `wsl.exe` call is bounded this way, so when
+WSL's interop goes stale (`UtilAcceptVsock: accept4 failed 110`, a `wsl.exe`
+that hangs) the reads come back on their own once WSL answers again. With no
+WSL read, the WSL card says why in plain words and when it asks again ("WSL did
+not answer for 10 s; asking again at 14:05:30."), and the window shows Windows
+alone.
 
 Its sessions still run inside WSL, under prifly's agent there
 (`prifly-agent`): each `claude` hangs under a `prifly-agent relay <relays dir>

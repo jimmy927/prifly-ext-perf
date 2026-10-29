@@ -27,7 +27,8 @@ import {
   shareOut,
 } from "./gpu";
 import { HOST } from "./host";
-import { gpuProcessCounters, type WindowsSampler } from "./windows";
+import { gpuProcessCounters } from "./windows";
+import type { WindowsSampler } from "./windows-sampler";
 
 const SMI_EVERY = 5_000;
 const PROCESSES_EVERY = 10_000;

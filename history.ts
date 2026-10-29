@@ -37,7 +37,10 @@ function point(
         ? null
         : {
             cpu: machineBusy(c),
-            memory: memTotal > 0 ? 100 * (1 - ((c.availableMB ?? 0) * 2 ** 20) / memTotal) : 0,
+            // Commit charge, the memory row's headline; RAM in use where Windows gave no commit.
+            memory:
+              c.committed ??
+              (memTotal > 0 ? 100 * (1 - ((c.availableMB ?? 0) * 2 ** 20) / memTotal) : 0),
             disk: (c.diskRead ?? 0) + (c.diskWrite ?? 0),
           },
   };

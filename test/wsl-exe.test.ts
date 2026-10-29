@@ -3,7 +3,9 @@ import { hostOf } from "../host";
 import { ScriptShell, type ShellChild } from "../shell";
 import type { LinuxRaw } from "../wsl";
 import {
+  clock,
   decodeWsl,
+  duration,
   parseWslRead,
   probeAnswer,
   READ,
@@ -133,6 +135,12 @@ describe("a read through wsl.exe", () => {
     expect(parseWslRead("sh: tail: not found\n", 1)).toBeNull();
     expect(parseWslRead("", 1)).toBeNull();
   });
+
+  test("an interop error line before the files reads the same", () => {
+    const stale = "<3>WSL (1234) ERROR: UtilAcceptVsock:273: accept4 failed 110\n";
+    expect(parseWslRead(stale + BLOB, 1)).toEqual(parseWslRead(BLOB, 1));
+    expect(parseWslRead(stale, 1)).toBeNull();
+  });
 });
 
 describe("asking wsl.exe whether WSL runs", () => {
@@ -150,6 +158,14 @@ describe("asking wsl.exe whether WSL runs", () => {
     expect(probeAnswer({ code: 1 }, "There are no running distributions.")).toBe(
       "WSL is not running: There are no running distributions.",
     );
+  });
+
+  test("WSL's own error line on stale interop is no distro", () => {
+    const stale = "<3>WSL (1234) ERROR: UtilAcceptVsock:273: accept4 failed 110";
+    expect(probeAnswer(null, stale)).toBe(`WSL answered with an error: ${stale}`);
+    expect(probeAnswer({ code: 1 }, stale)).toBe(`WSL answered with an error: ${stale}`);
+    // A distro named beside it is still a yes: the shell's own time limit catches a hang.
+    expect(probeAnswer(null, `${stale}\nUbuntu-20.04`)).toBe("");
   });
 });
 
@@ -198,21 +214,45 @@ describe("the sh frame", () => {
   });
 });
 
-function setup(probeAnswers: string[]) {
+/** A `wsl.exe --list --running` that never answers. */
+const HANG = null;
+
+/**
+ * A `WslLinux` over fakes: `probeAnswers` in turn (`HANG` for a probe that
+ * never settles, "" after the last), and shells made by `makeChild`.
+ */
+function setup(
+  probeAnswers: (string | null)[],
+  options: { readTimeout?: number; probeTimeout?: number; makeChild?: () => FakeSh } = {},
+) {
   const children: FakeSh[] = [];
   const reads: LinuxRaw[] = [];
   let probes = 0;
   const wsl = new WslLinux({
     spawn: () => {
-      const child = new FakeSh();
+      const child = (options.makeChild ?? (() => new FakeSh()))();
       children.push(child);
       return child;
     },
-    probe: async () => probeAnswers[probes++] ?? "",
+    probe: () => {
+      const answer = probeAnswers[probes++];
+      return answer === HANG ? new Promise<string>(() => {}) : Promise.resolve(answer ?? "");
+    },
     onRead: (raw) => reads.push(raw),
+    ...(options.readTimeout === undefined ? {} : { readTimeout: options.readTimeout }),
+    ...(options.probeTimeout === undefined ? {} : { probeTimeout: options.probeTimeout }),
   });
   return { wsl, children, reads, probes: () => probes };
 }
+
+/** What `absent` says after `why`, for a next try a minute after the last failure. */
+const retrying = (why: string) =>
+  new RegExp(
+    `^${why.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; asking again at \\d\\d:\\d\\d:\\d\\d\\.$`,
+  );
+
+/** The poll that comes once the minute after a failure is up. */
+const MINUTE_ON = () => Date.now() + 61_000;
 
 describe("WslLinux", () => {
   test("asks whether WSL runs, then reads it through one shell, one read at a time", async () => {
@@ -241,7 +281,7 @@ describe("WslLinux", () => {
     const { wsl, children, probes } = setup(["WSL is not running on this host."]);
     wsl.poll();
     await settle();
-    expect(wsl.absent).toBe("WSL is not running on this host.");
+    expect(wsl.absent).toMatch(retrying("WSL is not running on this host"));
     wsl.poll();
     await settle();
     expect(probes()).toBe(1);
@@ -258,8 +298,10 @@ describe("WslLinux", () => {
     wsl.poll();
     children[0]?.end("exit 1: The Windows Subsystem for Linux instance has terminated.");
     await settle();
-    expect(wsl.absent).toBe(
-      "WSL: shell ended: exit 1: The Windows Subsystem for Linux instance has terminated.",
+    expect(wsl.absent).toMatch(
+      retrying(
+        "WSL's shell ended (exit 1: The Windows Subsystem for Linux instance has terminated.)",
+      ),
     );
     wsl.poll();
     await settle();
@@ -281,8 +323,10 @@ describe("WslLinux", () => {
     // `wsl --shutdown` while no read is in flight.
     children[0]?.end("exit 1: The Windows Subsystem for Linux instance has terminated.");
     await settle();
-    expect(wsl.absent).toBe(
-      "WSL: shell ended: exit 1: The Windows Subsystem for Linux instance has terminated.",
+    expect(wsl.absent).toMatch(
+      retrying(
+        "WSL's shell ended (exit 1: The Windows Subsystem for Linux instance has terminated.)",
+      ),
     );
     wsl.poll();
     await settle();
@@ -312,6 +356,110 @@ describe("WslLinux", () => {
     await settle();
     expect(children[0]?.killed).toBe(true);
     wsl.poll(Date.now() + 61_000);
+    expect(children).toHaveLength(1);
+  });
+});
+
+const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+/** A `wsl.exe` that Windows will not end: its kill throws, and it never exits. */
+class StuckSh extends FakeSh {
+  override kill(): void {
+    this.killed = true;
+    throw new Error("Access is denied.");
+  }
+}
+
+describe("WslLinux once WSL stops answering (stale interop, accept4 failed 110)", () => {
+  test("says how long in plain words", () => {
+    expect(duration(10_000)).toBe("10 s");
+    expect(duration(20)).toBe("20 ms");
+    expect(clock(new Date(2026, 9, 29, 14, 5, 30).getTime())).toBe("14:05:30");
+  });
+
+  test("a shell that hangs is killed, and a new one reads once WSL answers again", async () => {
+    const { wsl, children, reads, probes } = setup(["", ""], { readTimeout: 20 });
+    wsl.poll();
+    await settle();
+    expect(wsl.absent).toBe("WSL runs; reading it…");
+    // The read that never comes back.
+    wsl.poll();
+    await wait(40);
+    expect(children[0]?.killed).toBe(true);
+    expect(wsl.absent).toMatch(retrying("WSL did not answer for 20 ms"));
+    expect(reads).toHaveLength(0);
+    // Nothing stays held: before the minute is up nothing is asked, after it WSL is.
+    wsl.poll();
+    await settle();
+    expect(probes()).toBe(1);
+    wsl.poll(MINUTE_ON());
+    await settle();
+    expect(probes()).toBe(2);
+    wsl.poll();
+    expect(children).toHaveLength(2);
+    // The old shell answering late counts for nothing; the new one's answer is read.
+    children[0]?.answer(BLOB);
+    children[1]?.answer(BLOB);
+    await settle();
+    expect(reads).toHaveLength(1);
+    expect(wsl.absent).toBe("");
+    wsl.poll();
+    children[1]?.answer(BLOB);
+    await settle();
+    expect(reads).toHaveLength(2);
+  });
+
+  test("a wsl.exe --list --running that hangs is a no within its limit, and asked again", async () => {
+    const { wsl, children, reads, probes } = setup([HANG, ""], { probeTimeout: 20 });
+    wsl.poll();
+    await settle();
+    expect(wsl.absent).toBe("Looking for WSL…");
+    await wait(40);
+    expect(wsl.absent).toMatch(retrying("wsl.exe --list --running did not answer for 20 ms"));
+    expect(children).toHaveLength(0);
+    wsl.poll(MINUTE_ON());
+    expect(wsl.absent).toBe("wsl.exe --list --running did not answer for 20 ms; asking again now…");
+    await settle();
+    expect(probes()).toBe(2);
+    wsl.poll();
+    children[0]?.answer(BLOB);
+    await settle();
+    expect(reads).toHaveLength(1);
+    expect(wsl.absent).toBe("");
+  });
+
+  test("a wsl.exe whose kill never ends it holds up nothing: the next one still starts", async () => {
+    let made = 0;
+    const makeChild = () => (made++ === 0 ? new StuckSh() : new FakeSh());
+    const { wsl, children, reads } = setup(["", ""], { readTimeout: 20, makeChild });
+    wsl.poll();
+    await settle();
+    wsl.poll();
+    await wait(40);
+    expect(children[0]?.killed).toBe(true);
+    expect(wsl.absent).toMatch(retrying("WSL did not answer for 20 ms"));
+    wsl.poll(MINUTE_ON());
+    await settle();
+    wsl.poll();
+    expect(children).toHaveLength(2);
+    children[1]?.answer(BLOB);
+    await settle();
+    expect(reads).toHaveLength(1);
+  });
+
+  test("a script that times out in the same shell is WSL gone at once, not at the next read", async () => {
+    const { wsl, children } = setup([""]);
+    wsl.poll();
+    await settle();
+    wsl.poll();
+    children[0]?.answer(BLOB);
+    await settle();
+    expect(wsl.absent).toBe("");
+    await expect(wsl.run("ps", 20)).rejects.toThrow("script timed out after 20 ms");
+    expect(children[0]?.killed).toBe(true);
+    expect(wsl.absent).toMatch(retrying("WSL did not answer for 20 ms"));
+    // And says so to whoever asks next, without a wsl.exe of its own.
+    await expect(wsl.run("ps", 20)).rejects.toThrow("WSL did not answer for 20 ms");
     expect(children).toHaveLength(1);
   });
 });
