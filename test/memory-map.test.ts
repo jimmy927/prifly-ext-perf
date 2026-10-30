@@ -3,6 +3,7 @@ import { type Holder, type Holders, withPools } from "../holders";
 import { type MemoryMapInput, memoryMap, type Tile } from "../memory-map";
 import { COUNTERS, type Field, type WindowsCounters } from "../windows";
 import type { PoolTag } from "../windows-memory";
+import { NOT_READ } from "../wsl-map";
 
 /** `gb` gigabytes, in whole MiB so that sums are exact. */
 const GB = (gb: number) => Math.round(gb * 1024) * 2 ** 20;
@@ -329,6 +330,10 @@ describe("the WSL VM split by what Linux holds", () => {
     expect(find(map.commit, "wsl")?.children).toBeUndefined();
     expect(find(map.commit, "wsl")?.value).toBe(23.92 * GIB);
     expect(find(map.ram, "wslram")?.children).toBeUndefined();
+    // Nothing said why: the detail still says it is whole for want of Linux's read.
+    expect(find(map.commit, "wsl")?.why).toEndWith(`not split by what Linux holds: ${NOT_READ}`);
+    const absent = live({ linux: null, linuxAbsent: "WSL is not running on this host." });
+    expect(find(absent.ram, "wslram")?.why).toEndWith(": WSL is not running on this host.");
   });
 
   test("no process table yet: no prifly or Docker part, the programs one tile", () => {
