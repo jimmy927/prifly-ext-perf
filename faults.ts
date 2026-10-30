@@ -70,32 +70,33 @@ export function faultsOf(
     c.demandZeroFaults,
     "Pages a program asked for that Windows handed over zeroed: new memory, not memory taken back.",
   );
-  add("cache", c.cacheFaults, "Pages found in the file cache when a program touched a file.");
   add(
-    "disk",
-    c.pagesInput,
-    "Pages Windows had to read from the disk or the page file to answer a fault.",
+    "cache",
+    c.cacheFaults,
+    "Faults on the file cache's own pages, answered from memory or disk; also counted under the kinds above.",
   );
+  add("disk", c.pageReads, "Faults that had to be read from the disk or the page file.");
+  // Cache faults overlap the others (each is answered from memory or disk), so
+  // only the other three add up to a part of all faults.
+  const distinct = () =>
+    kinds.reduce((sum, k) => (k.key === "cache" || k.key === "other" ? sum : sum + k.rate), 0);
   const all = finite(c.pageFaults) ? Math.max(0, c.pageFaults) : null;
   if (all !== null) {
-    const summed = kinds.reduce((sum, k) => sum + k.rate, 0);
+    const summed = distinct();
     add(
       "other",
       Math.max(0, all - summed),
       "Faults of none of the kinds above: copy-on-write of shared pages, guard pages and the like.",
     );
   }
-  // The kinds can add to more than the total (a disk read is also a fault of
-  // another kind): the total is then what they add to, so no bar passes the whole.
-  const total = Math.max(
-    all ?? 0,
-    kinds.reduce((sum, k) => sum + k.rate, 0),
-  );
+  // The kinds can add to more than the total: the total is then what the
+  // distinct ones add to, and no bar passes the whole.
+  const total = Math.max(all ?? 0, distinct());
   if (!(total > 0)) return null;
   const bars = kinds.map((k) => ({
     ...k,
     text: `${NAMES[k.key]} ${rate(k.rate)}`,
-    share: k.rate / total,
+    share: Math.min(1, k.rate / total),
   }));
   return { bars, most: mostFaults(all, processes) };
 }

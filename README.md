@@ -303,9 +303,12 @@ bar for what the kind is:
 - **back from trimming**: `Transition Faults/sec`, pages Windows took out of a
   program and handed back;
 - **new zeroed pages**: `Demand Zero Faults/sec`, fresh memory a program asked for;
-- **from the file cache**: `Cache Faults/sec`;
-- **from disk**: `Pages Input/sec`, pages read from the disk or the page file;
-- **other kinds**: `Page Faults/sec` less the four above, never below 0
+- **from the file cache**: `Cache Faults/sec`, faults on the file cache's own
+  pages, answered from memory or disk, so also counted under other kinds;
+- **from disk**: `Page Reads/sec`, faults that had to be read from the disk or
+  the page file;
+- **other kinds**: `Page Faults/sec` less back from trimming, new zeroed pages and from
+  disk (the file cache's faults overlap them), never below 0
   (copy-on-write, guard pages).
 
 A counter Windows did not give leaves its bar out, and "other kinds" too

@@ -25,7 +25,7 @@ const calm = {
   demandZeroFaults: 3000,
   pageFaults: null,
   cacheFaults: null,
-  pagesInput: null,
+  pageReads: null,
   pageFile: 5,
   diskIdle: 99,
   readLatency: 0.002,
@@ -69,7 +69,7 @@ const peak = {
   demandZeroFaults: 98_000,
   pageFaults: null,
   cacheFaults: null,
-  pagesInput: null,
+  pageReads: null,
   poolPaged: 4.7 * GB,
   poolNonpaged: 0.5 * GB,
 };

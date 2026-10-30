@@ -194,7 +194,7 @@ test("Windows counters average over the lines that had them", () => {
     demandZeroFaults: null,
     pageFaults: null,
     cacheFaults: null,
-    pagesInput: null,
+    pageReads: null,
     pageFile: null,
     diskIdle: null,
     readLatency: null,
