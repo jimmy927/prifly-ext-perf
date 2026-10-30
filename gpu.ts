@@ -302,6 +302,8 @@ export type GpuRow = {
   name: string;
   what: string;
   mib: number;
+  /** The model a prifly row holds (one part of a worker); absent on every other row. */
+  model?: string;
 };
 
 const HOLDER_KIND: Record<string, string> = {
@@ -369,6 +371,7 @@ function holderRows(holders: Holder[]): GpuRow[] {
       name: h.label,
       what: modelWhy(h.which, part),
       mib: part.mib,
+      ...(part.model === "" ? {} : { model: part.model }),
     }));
   });
 }

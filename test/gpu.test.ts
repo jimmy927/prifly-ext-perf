@@ -13,7 +13,7 @@ import {
   vmRows,
 } from "../gpu";
 import { type Tone, withGreyWords } from "../verdict";
-import { GPU_ADAPTER, parseGpuAdapters } from "../windows";
+import { GPU_ADAPTER, GPU_ADAPTER_SHARED, parseGpuAdapters } from "../windows";
 
 const NVIDIA = "0x00000000_0x00013915";
 const INTEL = "0x00000000_0x000128c5";
@@ -60,6 +60,15 @@ describe("GPU adapter counters", () => {
       ),
     ).toBeNull();
     expect(GPU_ADAPTER).toContain("Dedicated Usage");
+  });
+
+  test("shared usage is read by its own columns, not the dedicated ones", () => {
+    const both = `"(PDH-CSV 4.0)","\\\\PC\\GPU Adapter Memory(luid_0x00000000_0x00013915_phys_0)\\Dedicated Usage","\\\\PC\\GPU Adapter Memory(luid_0x00000000_0x00013915_phys_0)\\Shared Usage"`;
+    const values = `"10/30/2026 14:38:05.738","6042488832.000000","211341312.000000"`;
+    expect(parseGpuAdapters(both, values)?.get(NVIDIA)).toBeCloseTo(5762.6, 1);
+    expect(parseGpuAdapters(both, values, "Shared Usage")?.get(NVIDIA)).toBeCloseTo(201.6, 1);
+    expect(parseGpuAdapters(header, line, "Shared Usage")).toBeNull();
+    expect(GPU_ADAPTER_SHARED).toContain("Shared Usage");
   });
 });
 

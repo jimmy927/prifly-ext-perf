@@ -89,5 +89,6 @@ export function gpuCard(gpu) {
     metric(gpu),
     el("div", { class: "gpurow" }, bar(gpu)),
     bottom,
+    el("a", { class: "togpumem", href: "#memory/gpu" }, "Its memory as a map: the Memory tab →"),
   );
 }

@@ -1,5 +1,7 @@
 /**
- * Reads the graphics card for the Machine tab, only while the window is open:
+ * Reads the graphics card for the Machine tab's card and the Memory tab's
+ * section, only while the window is open, keeping the last hour of `nvidia-smi`
+ * reads for the section's sparklines:
  * `nvidia-smi` every 5 s, Windows' per-process counters every 10 s, and
  * prifly's `gpu-holders.json` each time the page asks, from a host in WSL or
  * on Windows (`holdersPlaces`). The sums are in `gpu.ts`.
@@ -26,7 +28,9 @@ import {
   rowsOf,
   shareOut,
 } from "./gpu";
+import type { GpuPoint } from "./gpu-map";
 import { HOST } from "./host";
+import { HOUR, keep } from "./ring";
 import { gpuProcessCounters } from "./windows";
 import type { WindowsSampler } from "./windows-sampler";
 
@@ -79,7 +83,16 @@ export type GpuStatus =
       holders: GpuRow[];
       /** Why who holds the card is not known; empty when it is. */
       unknown: string;
+      /** The card's shared memory in use (system RAM it borrows), MiB; null where Windows' counters do not give it. */
+      shared: number | null;
     };
+
+/** The card's shared memory in use, by Windows' adapter counters for the card's luid; null where not counted. */
+function sharedOf(windows: WindowsSampler | null, card: Card): number | null {
+  if (windows === null || windows.gpuAdapters === null || windows.gpuShared === null) return null;
+  const luid = pickLuid(windows.gpuAdapters, card.total - card.free);
+  return luid === null ? null : (windows.gpuShared.get(luid) ?? null);
+}
 
 function run(command: string): Promise<string | null> {
   return new Promise((done) => {
@@ -176,6 +189,8 @@ function holdersFile(places: HoldersPlace[], names: Map<number, string> | null) 
 
 export class GpuMonitor {
   private card: Card | null = null;
+  /** One point per `nvidia-smi` read, the last hour: the Memory tab's sparklines. */
+  readonly history: GpuPoint[] = [];
   private probed = false;
   private smiAt = 0;
   private processes: (GpuProcesses & { at: number }) | null = null;
@@ -208,6 +223,9 @@ export class GpuMonitor {
       void readCard().then((card) => {
         this.card = card;
         this.probed = true;
+        if (card === null) return;
+        const point = { at: Date.now(), total: card.total, free: card.free };
+        keep(this.history, { ...point, shared: sharedOf(windows, card) }, HOUR);
       });
     }
     if (this.card !== null && !this.scanning && now - this.dxgAt > PROCESSES_EVERY) {
@@ -247,7 +265,8 @@ export class GpuMonitor {
     // The file does not depend on Windows' counters: grey is known without them.
     const file = holdersFile(this.holdersPlaces, this.processes?.names ?? null);
     const grey = greyState(file.holders, card.free, file.greyNeeds);
-    const base = { loading: false as const, ...card, greyNeeds: file.greyNeeds, grey };
+    const shared = sharedOf(windows, card);
+    const base = { loading: false as const, ...card, greyNeeds: file.greyNeeds, grey, shared };
     const unknown = (why: string): GpuStatus => ({ ...base, holders: [], unknown: why });
     if (windows === null) return unknown("this is not WSL, so Windows' counters are not read.");
     const used = card.total - card.free;

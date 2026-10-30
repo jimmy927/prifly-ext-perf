@@ -3,9 +3,13 @@
 // machine: what Windows has promised (commit, which is what runs out) and what
 // sits in RAM now. In the promised view a tile's solid part is what of it is in
 // RAM; the striped rest Windows has trimmed out (compressed, in the page file,
-// or never touched). A click on a tile says what it is, on the right.
+// or never touched). A click on a tile says what it is, on the right. The
+// treemap, the detail and the strip are treemap.js's, shared with the graphics
+// card's section under it (gpumem.js).
 
-import { $, bytes, el, spark } from "./format.js";
+import { $, bytes, el } from "./format.js";
+import { drawGpuMemory } from "./gpumem.js";
+import { detail, find, layoutIn, strip, treemap } from "./treemap.js";
 
 /** Which view is shown, and which tile is picked: kept across the redraw every second. */
 let view = "commit";
@@ -15,107 +19,26 @@ let last = null;
 /** The tile each view opens on, where it has one. */
 const FIRST = { commit: "wsl", ram: "store" };
 
-/** Below this width the detail goes under the map, not beside it. */
-const NARROW = 760;
-const DETAIL_WIDTH = 330;
-
-/** How far from square a row of `areas` laid along `side` is: the squarified layout keeps it low. */
-function worst(areas, side) {
-  const total = areas.reduce((s, a) => s + a, 0);
-  const max = Math.max(...areas);
-  const min = Math.min(...areas);
-  return Math.max((side * side * max) / (total * total), (total * total) / (side * side * min));
-}
-
-/**
- * Squarified treemap (Bruls, Huizing, van Wijk 2000): lays `items` (each with
- * a `value`) into the rectangle `r`, rows chosen to keep tiles near square.
- */
-export function squarify(items, r) {
-  const total = items.reduce((s, i) => s + Math.max(0, i.value), 0);
-  if (total <= 0 || r.w <= 0 || r.h <= 0) return [];
-  const scale = (r.w * r.h) / total;
-  const queue = items
-    .filter((i) => i.value > 0)
-    .sort((a, b) => b.value - a.value)
-    .map((item) => ({ item, area: item.value * scale }));
-  const out = [];
-  let rect = { ...r };
-  while (queue.length > 0) {
-    const wide = rect.w >= rect.h;
-    const side = wide ? rect.h : rect.w;
-    const row = [queue.shift()];
-    const areas = () => row.map((x) => x.area);
-    while (queue.length > 0 && worst([...areas(), queue[0].area], side) <= worst(areas(), side))
-      row.push(queue.shift());
-    const thick = areas().reduce((s, a) => s + a, 0) / side;
-    let at = 0;
-    for (const x of row) {
-      const len = x.area / thick;
-      out.push(
-        wide
-          ? { item: x.item, x: rect.x, y: rect.y + at, w: thick, h: len }
-          : { item: x.item, x: rect.x + at, y: rect.y, w: len, h: thick },
-      );
-      at += len;
-    }
-    rect = wide
-      ? { x: rect.x + thick, y: rect.y, w: rect.w - thick, h: rect.h }
-      : { x: rect.x, y: rect.y + thick, w: rect.w, h: rect.h - thick };
-  }
-  return out;
-}
-
 /** What of a promised tile is in RAM, never more than the tile; null where no counter says. */
 const inRam = (item) => (item.ram === undefined ? null : Math.min(item.ram, item.value));
 
-/** A tile's name and size, and in the promised view what of it is in RAM, where it fits. */
-function label(item, t) {
-  if (t.w <= 70 || t.h <= 30) return null;
+/** The label's small line: in the promised view, what of a tile is in RAM where it is not all of it. */
+function ramNote(item) {
   const ram = view === "commit" && item.children === undefined ? inRam(item) : null;
-  return el(
-    "div",
-    { class: "mlabel" },
-    el("b", {}, item.name),
-    ` ${bytes(item.value)}`,
-    ram !== null && ram < 0.95 * item.value ? el("small", {}, `${bytes(ram)} in RAM`) : null,
-  );
+  return ram !== null && ram < 0.95 * item.value ? `${bytes(ram)} in RAM` : null;
 }
 
-/** One tile: its colour, its children inside it, the part of it in RAM solid and the rest striped. */
-function tileNode(t) {
-  const { item } = t;
+/** In the promised view, the part of a tile trimmed out of RAM, striped. */
+function trimmed(item, node) {
   const ram = inRam(item);
-  const node = el("div", {
-    class: `mtile ${item.colour}${picked === item.key ? " picked" : ""}${item.children ? " group" : ""}`,
-    style: `left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px`,
-    title: `${item.name}: ${bytes(item.value)}${ram === null ? "" : ` · ${bytes(ram)} in RAM`}`,
-  });
   if (view === "commit" && ram !== null && ram < item.value && !item.children) {
     node.append(el("div", { class: "trimmed", style: `height:${100 * (1 - ram / item.value)}%` }));
   }
-  if (item.children && t.w > 40 && t.h > 40) {
-    const pad = 18;
-    for (const c of squarify(item.children, { x: 2, y: pad, w: t.w - 4, h: t.h - pad - 2 }))
-      node.append(tileNode(c));
-  }
-  const text = label(item, t);
-  if (text !== null) node.append(text);
-  node.addEventListener("click", (event) => {
-    event.stopPropagation();
-    picked = item.key;
-    if (last !== null) drawMemoryTab(last);
-  });
-  return node;
 }
 
-function find(items, key) {
-  for (const i of items) {
-    if (i.key === key) return i;
-    const inner = i.children ? find(i.children, key) : null;
-    if (inner !== null) return inner;
-  }
-  return null;
+function title(item) {
+  const ram = inRam(item);
+  return `${item.name}: ${bytes(item.value)}${ram === null ? "" : ` · ${bytes(ram)} in RAM`}`;
 }
 
 /** The picked tile's children, a row each: name, size and, promised, what is in RAM. */
@@ -139,22 +62,12 @@ function childTable(children) {
   );
 }
 
-/** The side panel: what the picked tile is, in words. */
-function detail(item) {
-  if (item === null)
-    return el("aside", { class: "mdetail" }, el("p", { class: "muted" }, "Click a tile."));
+/** Under the picked tile's size, promised: what of it is in RAM and what is trimmed out. */
+function ramLines(item) {
   const ram = view === "commit" ? inRam(item) : null;
-  return el(
-    "aside",
-    { class: "mdetail" },
-    el("h3", {}, item.name),
-    el("div", { class: "num big" }, bytes(item.value)),
-    ram === null
-      ? null
-      : el("p", { class: "num" }, `${bytes(ram)} in RAM · ${bytes(item.value - ram)} trimmed out`),
-    el("p", {}, item.why),
-    item.children ? childTable(item.children) : null,
-  );
+  return ram === null
+    ? []
+    : [el("p", { class: "num" }, `${bytes(ram)} in RAM · ${bytes(item.value - ram)} trimmed out`)];
 }
 
 /** The header's line: promised against the limit, or RAM in use and available. */
@@ -205,12 +118,17 @@ function mapCard(m, state) {
   const items = view === "commit" ? m.commit : m.ram;
   if (picked === null || find(items, picked) === null)
     picked = find(items, FIRST[view]) === null ? (items[0]?.key ?? null) : FIRST[view];
-  const room = $("memtab").clientWidth || 1100;
-  const narrow = room < NARROW;
-  const width = Math.max(280, narrow ? room - 28 : room - DETAIL_WIDTH - 44);
-  const height = Math.round(Math.min(520, Math.max(300, width * 0.6)));
-  const map = el("div", { class: "mmap", style: `width:${width}px;height:${height}px` });
-  for (const t of squarify(items, { x: 0, y: 0, w: width, h: height })) map.append(tileNode(t));
+  const { narrow, width, height } = layoutIn($("memtab").clientWidth || 1100);
+  const map = treemap(items, width, height, {
+    picked,
+    pick: (key) => {
+      picked = key;
+      if (last !== null) drawMemoryTab(last);
+    },
+    note: ramNote,
+    title,
+    decorate: trimmed,
+  });
   return el(
     "div",
     { class: "card", "data-part": "memtab" },
@@ -231,7 +149,7 @@ function mapCard(m, state) {
       "div",
       { class: `mbody${narrow ? " narrow" : ""}` },
       el("div", {}, map, legend(m)),
-      detail(picked === null ? null : find(items, picked)),
+      detail(picked === null ? null : find(items, picked), ramLines, childTable),
     ),
   );
 }
@@ -242,34 +160,17 @@ const SERIES = { commit: "committed", trimming: "trimming", free: "free" };
 /**
  * The pressure strip: three readings of how hard Windows works to make room,
  * each coloured as the memory verdict colours it, with the last hour beside it.
- * A reading with no counter shows "—" and no colour; no history, an empty line.
  */
 function pressureStrip(m, state) {
-  return el(
-    "div",
-    { class: "card pressure", "data-part": "pressure" },
-    ...(m.pressure ?? []).map((r) => {
-      const values = (state.history ?? [])
-        .map((point) => point.windows?.[SERIES[r.key]])
-        .filter((v) => typeof v === "number");
-      return el(
-        "div",
-        { class: `pread ${r.tone ?? "neutral"}` },
-        el("span", { class: "pname" }, r.name),
-        el("span", { class: "pvalue" }, r.main, r.small === "" ? null : el("small", {}, r.small)),
-        el("span", { class: "pmeans muted" }, r.means),
-        spark(values, Math.max(r.ceiling, ...values)),
-      );
-    }),
-  );
+  const valuesOf = (r) =>
+    (state.history ?? [])
+      .map((point) => point.windows?.[SERIES[r.key]])
+      .filter((v) => typeof v === "number");
+  return strip(m.pressure ?? [], valuesOf, "pressure");
 }
 
-/**
- * Draws the tab into `#memtab`. Where there is no Windows (`memoryMap` null)
- * the tab's button is hidden, and the tab, reached by its link, says so.
- */
-export function drawMemoryTab(state) {
-  last = state;
+/** Windows' part of the tab: the strip and the treemap, or a line on why there are none. */
+function drawWindows(state) {
   const m = state.memoryMap ?? null;
   $("memory-tab").hidden = m === null;
   if (m === null) {
@@ -283,6 +184,17 @@ export function drawMemoryTab(state) {
     return;
   }
   $("memtab").replaceChildren(pressureStrip(m, state), mapCard(m, state));
+}
+
+/**
+ * Draws the tab: Windows' memory into `#memtab` and the graphics card's under
+ * it. Where there is no Windows (`memoryMap` null) the tab's button is
+ * hidden, and the tab, reached by its link, says so.
+ */
+export function drawMemoryTab(state) {
+  last = state;
+  drawWindows(state);
+  drawGpuMemory(state);
 }
 
 /** Draws the tab again, as when it is shown: hidden, it had no width to lay out to. */

@@ -120,7 +120,9 @@ under Why when there are more than three). Where `/proc` cannot be scanned
 the remainder stays "WSL other". Only this distro's processes are visible:
 GPU use in another distro or in Docker Desktop's own is part of the VM's
 figure but cannot be named, so while no local process but prifly's workers has
-the GPU open it is counted into them. Read only while the window is open.
+the GPU open it is counted into them. Read only while the window is open. The
+card links to the Memory tab's [graphics card section](#graphics-card-memory),
+the same holders as a treemap.
 
 ### When it turns orange or red
 
@@ -280,6 +282,46 @@ its `bun` and its `bun Helper` renderers). Without WSL there is no WSL VM row.
 A process that ended between the reads counts what Windows still gave for it.
 When the process list cannot be read the card says so, with Windows' words;
 without the memory counters the two rows held by no process are left out.
+
+### Graphics card memory
+
+Under Windows' map and its table, the same display for the graphics card's
+dedicated memory (e.g. 8 GB): a pressure strip and a treemap, built from the
+same holders as the Machine tab's [Graphics card](#graphics-card) card, whose
+link "Its memory as a map" opens the tab scrolled to this section
+(`#memory/gpu`). The tiles:
+
+- **prifly's model workers**, a tile per model part ("Dictation (final):
+  parakeet-tdt-0.6b", "Dictation (final): whisper turbo"), split as the card
+  splits them (`gpu-holders.json` and its `parts`);
+- **the WSL VM's remainder**: named after the other WSL processes that have
+  `/dev/dxg` open ("python3 (pid 123)"), else "WSL other"; with no holders file,
+  the VM's whole share is one "prifly (WSL)" tile;
+- **each Windows program** the card names (NVIDIA overlay, dwm, Explorer…) and
+  "Windows other";
+- **Free**, with what grey words need to start (`greyNeeds`, 1.5 GB by
+  default) dashed on it and a line "grey words need 1.5 GB: would start" or
+  "would not start"; where free is short of it the dashes cover the whole tile
+  in orange. While a grey worker runs the tile says "grey words on".
+
+Clicking a tile says what it is: the card's own Why (the model's role, "Detects
+which language you speak; turns Swedish speech into text · whisper turbo"), else
+what that kind of tile is, and its exact MiB and where it runs. Where Windows'
+counters cannot say who holds the card, what is used is one "In use" tile and the
+section says why.
+
+The strip, each reading with the last hour as a line (a point a minute, from
+`nvidia-smi`'s reads, so only the time the window was open):
+
+| Reading | Green | Orange | Red | Why |
+|---|---|---|---|---|
+| **Dedicated in use**, % of the card | under 85 % | from 85 % | from 95 % | 85 % of 8 GB leaves 1.2 GB, less than grey words need; at 95 % (0.4 GB left) the driver starts moving the card's memory out to shared RAM. |
+| **Free for grey words**, free against `greyNeeds` | grey words on, or would start | would not start | — | The one thing free card memory decides for prifly. |
+| **Shared GPU memory**, system RAM the card borrows (`\GPU Adapter Memory(*)\Shared Usage` for the card's luid) | under 1 GB | from 1 GB | — | A desktop at rest borrows a few hundred MB (211 MB on 2026-10-30); past a gigabyte the card is spilling what does not fit in its own memory into RAM: the GPU's trimming. |
+
+A counter Windows did not give reads "—" with no colour. Without an NVIDIA card
+the section is a line saying so; until the first read, "Reading the graphics
+card…". Read only while the window is open, as the card is.
 
 ## prifly
 

@@ -25,6 +25,7 @@
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
+import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
 import { holdersOf, withPools } from "./holders";
 import { HOST } from "./host";
@@ -439,6 +440,7 @@ function status(current: State, seconds: number) {
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     holders: holdersStatus(current, windows?.value ?? null),
     memoryMap: memoryMapStatus(current, windows?.value ?? null),
+    gpuMap: gpuMemoryMap(gpu, current.gpu.history, Date.now()),
     others,
     prifly: report,
     // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.

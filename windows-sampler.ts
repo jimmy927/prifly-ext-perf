@@ -9,7 +9,14 @@ import type { Readable } from "node:stream";
 import { HOST } from "./host";
 import { type HostProcess, hookHostExit, realProcess } from "./host-exit";
 import { HOUR, keep } from "./ring";
-import { COUNTERS, GPU_ADAPTER, parseGpuAdapters, parseRow, type WindowsCounters } from "./windows";
+import {
+  COUNTERS,
+  GPU_ADAPTER,
+  GPU_ADAPTER_SHARED,
+  parseGpuAdapters,
+  parseRow,
+  type WindowsCounters,
+} from "./windows";
 
 /** The parts of a started `typeperf` the sampler uses; tests give it a fake. */
 export type TypeperfChild = {
@@ -73,6 +80,8 @@ export class WindowsSampler {
   readonly history: WindowsCounters[] = [];
   /** The graphics adapters' memory in use now, MiB by luid; null where Windows has no such counters. */
   gpuAdapters: Map<string, number> | null = null;
+  /** The graphics adapters' shared memory in use now (system RAM they borrow), MiB by luid; null where not counted. */
+  gpuShared: Map<string, number> | null = null;
   error = "";
   /** The one whose lines are kept. */
   private current: Run | null = null;
@@ -113,6 +122,7 @@ export class WindowsSampler {
     const child = this.deps.spawn([
       ...Object.values(COUNTERS),
       GPU_ADAPTER,
+      GPU_ADAPTER_SHARED,
       "-si",
       String(this.everySeconds),
       "-sc",
@@ -147,6 +157,7 @@ export class WindowsSampler {
     if (row !== null) {
       this.latest = row;
       this.gpuAdapters = parseGpuAdapters(run.header, line);
+      this.gpuShared = parseGpuAdapters(run.header, line, "Shared Usage");
       keep(this.history, row, HOUR);
       this.error = "";
     }

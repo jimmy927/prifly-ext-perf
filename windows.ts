@@ -121,23 +121,39 @@ export function cpuSplit(
 
 /** Every graphics adapter's dedicated memory in use, read next to the others; the `*` is each adapter's luid. */
 export const GPU_ADAPTER = "\\GPU Adapter Memory(*)\\Dedicated Usage";
+/**
+ * Every graphics adapter's shared memory in use: system RAM the card borrows,
+ * mostly when its dedicated memory is short. Read next to `GPU_ADAPTER`.
+ */
+export const GPU_ADAPTER_SHARED = "\\GPU Adapter Memory(*)\\Shared Usage";
 
-const ADAPTER_COLUMN =
-  /GPU Adapter Memory\(luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?\)\\Dedicated Usage$/i;
+/** Which of the two adapter counters `parseGpuAdapters` reads. */
+export type AdapterUsage = "Dedicated Usage" | "Shared Usage";
+
+const ADAPTER_COLUMN = {
+  "Dedicated Usage":
+    /GPU Adapter Memory\(luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?\)\\Dedicated Usage$/i,
+  "Shared Usage":
+    /GPU Adapter Memory\(luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?\)\\Shared Usage$/i,
+};
 
 /**
- * The adapters' dedicated memory in use, in MiB, by luid (`0x…_0x…`), from one
- * `typeperf` line. An adapter with several physical parts, or listed twice
- * (`#2`), counts its largest. Null when the line has no such column: no GPU
- * counters on this Windows.
+ * The adapters' dedicated memory in use (or, with `usage`, their shared
+ * memory), in MiB, by luid (`0x…_0x…`), from one `typeperf` line. An adapter
+ * with several physical parts, or listed twice (`#2`), counts its largest.
+ * Null when the line has no such column: no such counters on this Windows.
  */
-export function parseGpuAdapters(header: string, line: string): Map<string, number> | null {
+export function parseGpuAdapters(
+  header: string,
+  line: string,
+  usage: AdapterUsage = "Dedicated Usage",
+): Map<string, number> | null {
   const names = cells(header);
   const values = cells(line);
   if (values.length < 2 || Number.isNaN(Date.parse(values[0] ?? ""))) return null;
   const adapters = new Map<string, number>();
   names.forEach((name, column) => {
-    const luid = ADAPTER_COLUMN.exec(name)?.[1]?.toLowerCase();
+    const luid = ADAPTER_COLUMN[usage].exec(name)?.[1]?.toLowerCase();
     const bytes = Number(values[column]);
     if (luid === undefined || !Number.isFinite(bytes) || bytes < 0) return;
     adapters.set(luid, Math.max(adapters.get(luid) ?? 0, bytes / 2 ** 20));
@@ -165,7 +181,7 @@ export function parseRow(header: string, line: string, at: number): WindowsCount
   const values = cells(line);
   if (values.length < 2 || Number.isNaN(Date.parse(values[0] ?? ""))) return null;
   // A line with more or fewer values than the header has columns (an adapter of
-  // `GPU_ADAPTER` come or gone) would put each value under a neighbour's name.
+  // `GPU_ADAPTER` or `GPU_ADAPTER_SHARED` come or gone) would put each value under a neighbour's name.
   if (values.length !== names.length) return null;
   const row = { at } as WindowsCounters;
   for (const [field, path] of Object.entries(COUNTERS) as [Field, string][]) {

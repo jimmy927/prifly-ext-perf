@@ -7,7 +7,8 @@
   --k-webview: #a8872e;
   --k-dwm: #779640;
 }
-#memtab .card > header {
+#memtab .card > header,
+#gpumem .card > header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -162,7 +163,8 @@
   font-size: 12px;
 }
 /* The pressure strip: three readings side by side, above the treemap. */
-#memtab .card.pressure {
+#memtab .card.pressure,
+#gpumem .card.pressure {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   margin-bottom: 14px;
@@ -214,4 +216,31 @@
   font-size: 12px;
   margin-top: 4px;
   color: var(--work);
+}
+/* The graphics card's section (gpumem.js), under Windows' map and its table. */
+#gpumem {
+  margin-top: 14px;
+}
+/* On the free tile, what grey words need to start: dashed, warning where free is short of it. */
+.mtile .gneed {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  max-height: calc(100% - 6px);
+  border: 2px dashed var(--muted-fg);
+  border-radius: 3px;
+  pointer-events: none;
+}
+.mtile.gshort .gneed {
+  border-color: var(--warning);
+}
+.mtile.gshort .mlabel small {
+  color: var(--warning);
+  opacity: 1;
+}
+.mlegend .sw.gdash {
+  margin-left: 0;
+  background: transparent;
+  border: 2px dashed var(--muted-fg);
 }

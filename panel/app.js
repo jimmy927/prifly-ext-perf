@@ -394,10 +394,15 @@ function showTab(tab) {
     button.setAttribute("aria-selected", String(button.dataset.tab === tab));
   // Laid out while hidden, the treemap had no width to fit.
   if (tab === "memory") redrawMemoryTab();
+  // `#memory/gpu`, the Graphics card card's link: the tab, scrolled to the card's section.
+  if (location.hash === "#memory/gpu") $("gpumem")?.scrollIntoView({ block: "start" });
 }
 
 const TABS = new Set(["machine", "memory", "prifly"]);
-const tabOf = () => (TABS.has(location.hash.slice(1)) ? location.hash.slice(1) : "machine");
+const tabOf = () => {
+  const tab = location.hash.slice(1).split("/")[0];
+  return TABS.has(tab) ? tab : "machine";
+};
 
 for (const button of document.querySelectorAll(".tab")) {
   button.addEventListener("click", () => {
