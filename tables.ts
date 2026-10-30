@@ -59,6 +59,8 @@ export class Tables {
   private readonly deps: TableDeps;
   private pssAt = 0;
   private pssReading = false;
+  /** Counts `clearPss` calls: a read through WSL that lands after one is dropped. */
+  private pssGeneration = 0;
   private dockerAt = 0;
   private procsReading = false;
   private windowsHostAt = 0;
@@ -102,7 +104,8 @@ export class Tables {
     if (this.pssReading || now - this.pssAt < PSS_EVERY) return;
     this.pssAt = now;
     const wsl = this.deps.wsl;
-    if (pids.length === 0) {
+    const command = pssRead(pids);
+    if (command === null) {
       this.pss = new Map();
       return;
     }
@@ -112,10 +115,14 @@ export class Tables {
     }
     if (wsl.absent !== "") return;
     this.pssReading = true;
+    const generation = this.pssGeneration;
     wsl
-      .run(pssRead(pids), WSL_TIMEOUT)
+      .run(command, WSL_TIMEOUT)
       .then((out) => {
-        if (wsl.absent === "" && !this.stopped) this.pss = parsePssRead(out);
+        // Not when the tab was left (`clearPss`) while it read: that answer says nothing now.
+        if (wsl.absent === "" && !this.stopped && generation === this.pssGeneration) {
+          this.pss = parsePssRead(out);
+        }
       })
       .catch((error: unknown) => {
         if (wsl.absent === "") this.deps.log("wsl_pss_failed", { error: String(error) });
@@ -129,6 +136,7 @@ export class Tables {
   clearPss(): void {
     this.pss = new Map();
     this.pssAt = 0;
+    this.pssGeneration += 1;
   }
 
   /** Forgets what was kept: it is from before a gap, and says nothing about now. */

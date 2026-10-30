@@ -146,15 +146,34 @@ describe("prifly sessions, split by what they run", () => {
     const relay = p(agent.pid, ["prifly-agent", "relay", "/r", SESSION]);
     const claude = p(relay.pid, ["claude"]);
     const shell = p(claude.pid, ["zsh", "-c", "pytest"]);
-    const kinds = new Map<number, Kind>();
+    const runner = p(agent.pid, [
+      "prifly-agent",
+      `/w/.prifly/drops/11111111/x/runners/r-ab/op-runner.js`,
+    ]);
+    const gate = p(runner.pid, ["bun", "test"]);
+    const helper = p(agent.pid, ["bun", "/x/intent-model/worker.js"]);
+    const stranger = p(1, ["sshd"]);
+    const all = [agent, relay, claude, shell, runner, gate, helper, stranger];
+    const known = [{ id: SESSION, title: "s", cwd: "/w", state: "working" }];
     const config = { forFolder: () => [] } as unknown as McpConfig;
-    priflyReport([agent, relay, claude, shell], null, [], config, [], null, kinds);
+    const counted = new Set<number>();
+    const kinds = new Map<number, Kind>();
+    priflyReport(all, null, known, config, [], null, counted, kinds);
     expect(Object.fromEntries(kinds)).toEqual({
       [agent.pid]: "host",
       [relay.pid]: "relay",
       [claude.pid]: "claude",
       [shell.pid]: "tools",
+      [runner.pid]: "gates",
+      [gate.pid]: "gates",
+      [helper.pid]: "host",
     });
+    // Every pid the report counts has its kind: none is left for "Other Linux programs" twice.
+    const plain = new Set<number>();
+    priflyReport(all, null, known, config, [], null, plain);
+    expect([...kinds.keys()].sort()).toEqual([...plain].sort());
+    expect([...counted].sort()).toEqual([...plain].sort());
+    expect(plain.has(stranger.pid)).toBe(false);
   });
 });
 

@@ -359,7 +359,8 @@ function priflyOf(current: State, seconds: number, memoryTab: boolean) {
       inVm: null,
     };
   }
-  const counted = new Map<number, Kind>();
+  const counted = new Set<number>();
+  const kinds = new Map<number, Kind>();
   const report = priflyReport(
     procs.value,
     tables.native ? null : process.pid,
@@ -368,18 +369,19 @@ function priflyOf(current: State, seconds: number, memoryTab: boolean) {
     containers,
     windowsHost === null ? null : { procs: windowsHost, hostPid: process.pid },
     counted,
+    kinds,
   );
   const others = { linux: otherPrograms(procs.value, counted), windows };
   // The `claude` processes' PSS, for the Memory tab's WSL tile: read only while that tab is open.
   if (memoryTab) {
-    const claudes = procs.value.filter((proc) => counted.get(proc.pid) === "claude");
+    const claudes = procs.value.filter((proc) => kinds.get(proc.pid) === "claude");
     tables.readPss(
       claudes.map((proc) => proc.pid),
       Date.now(),
     );
   }
-  // What prifly and Docker hold in the VM; a host on Windows' own processes are not among `counted`.
-  const inVm = inVmOf(procs.value, counted, tables.pss, containers, report.sessions);
+  // What prifly and Docker hold in the VM; a host on Windows' own processes are not among `kinds`.
+  const inVm = inVmOf(procs.value, kinds, tables.pss, containers, report.sessions);
   return { procs, containers, report, priflyWindows, others, inVm };
 }
 

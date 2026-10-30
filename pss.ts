@@ -37,12 +37,16 @@ export function readPss(pids: readonly number[]): Map<number, number> {
   return out;
 }
 
-/** The command that prints `pids`' `smaps_rollup`, each under its `==> <pid>/smaps_rollup <==` header. */
-export function pssRead(pids: readonly number[]): string {
+/**
+ * The command that prints `pids`' `smaps_rollup`, each under its
+ * `==> <pid>/smaps_rollup <==` header; null with no pid to read, since a
+ * `head` with no file would read the shared shell's stdin.
+ */
+export function pssRead(pids: readonly number[]): string | null {
   const files = pids
     .filter((pid) => Number.isInteger(pid) && pid > 0)
     .map((p) => `${p}/smaps_rollup`);
-  return `(cd /proc && head -v -- ${files.join(" ")} 2>/dev/null)`;
+  return files.length === 0 ? null : `(cd /proc && head -v -- ${files.join(" ")} 2>/dev/null)`;
 }
 
 /** What `pssRead` printed: each pid's PSS, those it could not read left out. */

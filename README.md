@@ -298,9 +298,9 @@ counter Windows did not give reads "—" with no colour.
 Clicking a tile says on the right what it is, its size, what of it is in RAM,
 and its children. A tile shows its name and size only where they fit, and the
 line under them (what is in RAM) only where that fits too; a tile too small
-for its name has no label, and its hover text and the detail still name it. A counter Windows did not give leaves its tile out. Until
-the process list is read, or where it cannot be, the programs are one tile and
-the card says why. A Linux host with no Windows has no Memory tab.
+for its name has no label, and its hover text and the detail still name it.
+A counter Windows did not give leaves its tile out. Until the process list is
+read, or where it cannot be, the programs are one tile and the card says why. A Linux host with no Windows has no Memory tab.
 
 ### Who holds Windows' memory
 

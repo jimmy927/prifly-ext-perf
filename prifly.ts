@@ -87,21 +87,20 @@ function addContainer(into: Usage, container: Container): void {
   into.cpu += container.cpu;
 }
 
-/**
- * While `priflyReport` reads WSL's table: the pids it counts, for
- * `otherPrograms`, and where it is a map, the kind each is counted as (the
- * Memory tab's WSL tile splits prifly's part by it, `wsl-map.ts`).
- */
-let counting: Set<number> | Map<number, Kind> | null = null;
+/** While `priflyReport` reads WSL's table: the pids it counts, for `otherPrograms`. */
+let counting: Set<number> | null = null;
+/** While it is read: the kind each counted pid is counted as, where the caller asked for it. */
+let countingKind: Map<number, Kind> | null = null;
 /** The report's kinds while it is read: which `Usage` is which kind. */
 let countingKinds: Record<Kind, Usage> | null = null;
 
+/** Every pid `add` sees is counted; the kind is recorded where `into` is one of the kinds. */
 function count(into: Usage, pid: number): void {
-  if (counting instanceof Set) counting.add(pid);
-  else if (counting !== null && countingKinds !== null) {
-    for (const [kind, usage] of Object.entries(countingKinds)) {
-      if (usage === into) counting.set(pid, kind as Kind);
-    }
+  if (counting === null) return;
+  counting.add(pid);
+  if (countingKind === null || countingKinds === null) return;
+  for (const [kind, usage] of Object.entries(countingKinds)) {
+    if (usage === into) countingKind.set(pid, kind as Kind);
   }
 }
 
@@ -423,7 +422,8 @@ export type WindowsHost = { procs: Proc[]; hostPid: number };
  * `otherContainers`. `hostPid` is the host in `procs`; null where the host
  * is not in them (a host on Windows itself, whose own processes are
  * `windows`, counted as the host's by the same rules). The pids of `procs`
- * it counts go into `counted`; a map gets the kind each is counted as.
+ * it counts go into `counted`, and with `kinds` the kind each is counted as
+ * (the Memory tab's WSL tile splits prifly's part by it, `wsl-map.ts`).
  */
 export function priflyReport(
   procs: Proc[],
@@ -432,13 +432,16 @@ export function priflyReport(
   config: McpConfig,
   containers: Container[] = [],
   windows: WindowsHost | null = null,
-  counted: Set<number> | Map<number, Kind> = new Set(),
+  counted: Set<number> = new Set(),
+  kinds: Map<number, Kind> | null = null,
 ): PriflyReport {
   counting = counted;
+  countingKind = kinds;
   try {
     return readReport(procs, hostPid, known, config, containers, windows);
   } finally {
     counting = null;
+    countingKind = null;
     countingKinds = null;
   }
 }

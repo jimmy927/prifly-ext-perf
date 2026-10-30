@@ -18,6 +18,9 @@ test("through wsl.exe: one head of the pids' smaps_rollup, each under its header
   expect(pssRead([12, 34])).toBe(
     "(cd /proc && head -v -- 12/smaps_rollup 34/smaps_rollup 2>/dev/null)",
   );
+  // No pid: no command, never a `head` with no file reading the shell's stdin.
+  expect(pssRead([])).toBeNull();
+  expect(pssRead([0, Number.NaN])).toBeNull();
   // 34 is another user's: head prints no section for it, and its RSS stands in.
   const out = `==> 12/smaps_rollup <==\r\n${ROLLUP.replace(/\n/g, "\r\n")}`;
   expect(parsePssRead(out)).toEqual(new Map([[12, 155000 * 1024]]));
