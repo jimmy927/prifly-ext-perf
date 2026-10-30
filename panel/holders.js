@@ -1,4 +1,5 @@
-// The "Who holds Windows' memory" card on the Machine tab: every Windows
+// The "Who holds Windows' memory" card on the Memory tab, under the treemap
+// (memtab.js), whose promised view it gives as a table: every Windows
 // process's commit (its private bytes, in RAM or trimmed out of it), grouped by
 // what it is, with what is in RAM beside it, and the commit no process holds.
 // Task Manager's Memory column is RAM alone, so a trimmed process looks small.

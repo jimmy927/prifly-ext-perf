@@ -40,7 +40,8 @@ describe("Windows counters", () => {
     const values = paths.map((_, i) => `"${i + 1}.5"`);
     const row = parseRow(header, `"10/01/2026 11:01:33.105",${values.join(",")}`, 7);
     expect(row?.busy).toBe(1.5);
-    expect(row?.wslVm).toBe(paths.length + 0.5);
+    expect(row?.wslVm).toBe(paths.indexOf(COUNTERS.wslVm) + 1.5);
+    expect(row?.cacheResident).toBe(paths.length + 0.5);
     expect(row?.at).toBe(7);
   });
 

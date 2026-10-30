@@ -10,6 +10,7 @@ import { gpuCard } from "./gpu.js";
 import { drawHolders } from "./holders.js";
 import { drawMcp } from "./mcp.js";
 import { memoryChecks, memoryRead, pagingRead, poolsRead } from "./memory.js";
+import { drawMemoryTab, redrawMemoryTab } from "./memtab.js";
 import { drawWhere, segment } from "./where.js";
 
 let last = null;
@@ -138,7 +139,7 @@ function windowsRows(windows, top) {
       v.cpu,
       "CPU",
       // The hypervisor's count where there is one: it alone sees the whole machine.
-      `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${c.queue ?? 0} waiting`,
+      `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${(c.queue ?? 0).toFixed(1)} waiting`,
       cpuSmall(c, info, split),
       spark(history("windows", "cpu"), 100),
       cpuBelow(split, top),
@@ -149,7 +150,10 @@ function windowsRows(windows, top) {
       memory.main,
       memory.small,
       spark(history("windows", "memory"), 100),
-      memoryChecks(checks),
+      [
+        ...memoryChecks(checks),
+        el("a", { class: "tomemory", href: "#memory" }, "What uses it: the Memory tab →"),
+      ],
     ),
     pools && metric(pools.tone, "Kernel pools", pools.main, pools.small, spark([]), pools.below),
     metric(
@@ -227,7 +231,6 @@ function drawMachine(state) {
   const gpu = gpuCard(state.gpu);
   if (gpu !== null) $("hosts").after(Object.assign(gpu, { id: "gpu" }));
   drawTop(state);
-  drawHolders(state);
 }
 
 function tile(key, value, detail, tone = "") {
@@ -364,6 +367,9 @@ function draw(state) {
   last = state;
   $("error").hidden = true;
   drawMachine(state);
+  // The Memory tab: the treemap, and under it who holds Windows' memory as a table.
+  drawMemoryTab(state);
+  drawHolders(state);
   drawPrifly(state);
 }
 
@@ -386,17 +392,20 @@ function showTab(tab) {
   for (const section of document.querySelectorAll("section")) section.hidden = section.id !== tab;
   for (const button of document.querySelectorAll(".tab"))
     button.setAttribute("aria-selected", String(button.dataset.tab === tab));
+  // Laid out while hidden, the treemap had no width to fit.
+  if (tab === "memory") redrawMemoryTab();
 }
+
+const TABS = new Set(["machine", "memory", "prifly"]);
+const tabOf = () => (TABS.has(location.hash.slice(1)) ? location.hash.slice(1) : "machine");
 
 for (const button of document.querySelectorAll(".tab")) {
   button.addEventListener("click", () => {
     location.hash = button.dataset.tab;
   });
 }
-addEventListener("hashchange", () =>
-  showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine"),
-);
-showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine");
+addEventListener("hashchange", () => showTab(tabOf()));
+showTab(tabOf());
 drawSplit(() => {
   if (last !== null) drawPrifly(last);
 });

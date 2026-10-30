@@ -33,6 +33,13 @@ const calm = {
   machine: 32,
   wslVmMem: null,
   wslVm: 100,
+  standbyCore: null,
+  standbyNormal: null,
+  standbyReserve: null,
+  modified: null,
+  free: null,
+  poolPagedResident: null,
+  cacheResident: null,
 } satisfies WindowsCounters;
 
 function judge(c: WindowsCounters) {

@@ -88,6 +88,13 @@ describe("Windows", () => {
     machine: 32,
     wslVmMem: null,
     wslVm: 100,
+    standbyCore: null,
+    standbyNormal: null,
+    standbyReserve: null,
+    modified: null,
+    free: null,
+    poolPagedResident: null,
+    cacheResident: null,
   } satisfies WindowsCounters;
 
   test("a queue over two per core is out of CPU", () => {

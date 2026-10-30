@@ -63,6 +63,20 @@ export const COUNTERS = {
   wslVmMem: "\\Process(vmmemwsl)\\Working Set",
   // Summed over cores: 100 is one core.
   wslVm: "\\Process(vmmemwsl)\\% Processor Time",
+  // Where RAM goes, for the Memory tab (`memory-map.ts`). Standby is cached
+  // pages Windows drops the moment a program wants RAM, in three priorities;
+  // with free and zeroed pages it is what `Available MBytes` counts (10817 MB
+  // = 11.3 GB standby + 16 MB free, 2026-10-30). Modified pages wait to be
+  // written out before they can be reused.
+  standbyCore: "\\Memory\\Standby Cache Core Bytes",
+  standbyNormal: "\\Memory\\Standby Cache Normal Priority Bytes",
+  standbyReserve: "\\Memory\\Standby Cache Reserve Bytes",
+  modified: "\\Memory\\Modified Page List Bytes",
+  free: "\\Memory\\Free & Zero Page List Bytes",
+  // The paged pool's part in RAM (the non-paged pool is all in RAM), and the
+  // file cache in use.
+  poolPagedResident: "\\Memory\\Pool Paged Resident Bytes",
+  cacheResident: "\\Memory\\System Cache Resident Bytes",
 } as const;
 export type Field = keyof typeof COUNTERS;
 

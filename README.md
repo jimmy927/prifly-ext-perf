@@ -81,44 +81,7 @@ the VM is down.
 **What uses the CPU now** lists the busiest processes on both sides. A WSL
 process that belongs to a prifly session is named with that session. A Windows
 program's memory is its commit ("2.8 GB committed", what it is in RAM in the
-tooltip), for the reason the next section gives.
-
-### Who holds Windows' memory
-
-Under it, on a machine with Windows, one row per kind of Windows process, by
-**commit** — its private bytes, Task Manager's "Commit size" — with what is in
-RAM (its working set) beside it, largest commit first: the WSL VM, Claude
-sessions (`claude.exe` and what each runs), the prifly host, its dictation
-workers and its intent model, prifly's agent and relays, test runs (`bun test`,
-`npm test`, `node --test`, vitest, jest, under the host, the agent or a
-session), prifly's window, Chrome, other WebView2, Docker Desktop, and the
-other programs by name, eight of them, the rest in one row. A process counts
-with its parent's kind unless it is one itself. Clicking a row lists its
-processes (twelve, with how many more).
-
-Why commit and not RAM: Task Manager's Memory column, and Windows' `Working Set
-- Private`, show only what is in RAM, and Windows trims a busy machine's
-processes out of RAM (to the standby list or the compression store) while
-their memory stays committed. Trimmed processes look small: on 2026-10-29
-`bun` had 13 GB committed and 3.3 GB in RAM. What is committed is what RAM
-and the page file must back between them, wherever it is now.
-
-Two rows are held by no process: **Kernel pools**, Windows' own paged and
-non-paged pool (the same sizes as the Kernel pools row above, where its tags
-are), and **Shared sections, page tables and the rest**, what is
-committed less every process's commit and the pools (never below 0): shared
-memory such as file mappings, the page tables, and drivers' allocations. On
-2026-10-29, of 72 GB committed, the pools were about 6.4 GB and the rest about
-7 GB.
-
-The host's processes, its helpers and its window are told apart only on a host
-on Windows itself (its own pid is Windows'); the window is a WebView2 under the
-host, or the installed app from `%LOCALAPPDATA%\sh.prifly.app` (its launcher,
-its `bun` and its `bun Helper` renderers). Without WSL there is no WSL VM row.
-A process that ended between the reads counts what Windows still gave for it.
-When the process list cannot be read the card says so, with Windows' words;
-without the memory counters the two rows held by no process are left out. A
-Linux host with no Windows has no such card.
+tooltip), for the reason **Who holds Windows' memory** on the Memory tab gives.
 
 ![The Machine tab, dark](screenshots/machine-dark.png)
 
@@ -243,6 +206,71 @@ guidance. One
 rule from that guidance is left out on purpose: "`Pages Input/sec` under 15"
 dates from spinning disks. An NVMe laptop reads thousands a second with
 nothing wrong (4,195 measured on the machine this was written on).
+
+## Memory
+
+On a machine with Windows, the tab between Machine and prifly shows what uses
+Windows' memory as a treemap, each tile as big as what it holds; the Machine
+tab's Windows Memory row links to it. Two views of the same machine:
+
+- **Promised (commit)**: the commit charge against its limit. The WSL VM (all
+  of it: Windows charges the VM's whole size against the limit, used or not);
+  prifly by part (dictation worker, Claude sessions, host and helpers, its
+  window, other bun); Chrome; WebView2 for other apps; dwm; other programs; the
+  kernel pools (the paged pool's biggest tags, those over an eighth of it, the
+  rest of the paged pool, and the non-paged pool); shared memory and page
+  tables (committed less every process's commit and the pools, never below 0);
+  and what is still free to promise. A tile's solid part is what of it is in
+  RAM (its working set); the striped rest is trimmed out: compressed, in the
+  page file, or never touched.
+- **In RAM now**: physical RAM. The WSL VM's working set; Windows programs,
+  grouped as above; compressed pages (the `Memory Compression` process's
+  working set); the kernel pools' resident part; the file cache; modified,
+  standby and free pages. Working sets count a page several programs share
+  once for each, so the program tiles are scaled down to what is left of RAM in
+  use, and the legend says by how much; RAM in use that the programs do not
+  fill is a tile of its own.
+
+Clicking a tile says on the right what it is, its size, what of it is in RAM,
+and its children. A counter Windows did not give leaves its tile out. Until
+the process list is read, or where it cannot be, the programs are one tile and
+the card says why. A Linux host with no Windows has no Memory tab.
+
+### Who holds Windows' memory
+
+Under the treemap, the promised view as a table: one row per kind of Windows process, by
+**commit** — its private bytes, Task Manager's "Commit size" — with what is in
+RAM (its working set) beside it, largest commit first: the WSL VM, Claude
+sessions (`claude.exe` and what each runs), the prifly host, its dictation
+workers and its intent model, prifly's agent and relays, test runs (`bun test`,
+`npm test`, `node --test`, vitest, jest, under the host, the agent or a
+session), prifly's window, Chrome, other WebView2, Docker Desktop, and the
+other programs by name, eight of them, the rest in one row. A process counts
+with its parent's kind unless it is one itself. Clicking a row lists its
+processes (twelve, with how many more).
+
+Why commit and not RAM: Task Manager's Memory column, and Windows' `Working Set
+- Private`, show only what is in RAM, and Windows trims a busy machine's
+processes out of RAM (to the standby list or the compression store) while
+their memory stays committed. Trimmed processes look small: on 2026-10-29
+`bun` had 13 GB committed and 3.3 GB in RAM. What is committed is what RAM
+and the page file must back between them, wherever it is now.
+
+Two rows are held by no process: **Kernel pools**, Windows' own paged and
+non-paged pool (the same sizes as the Machine tab's Kernel pools row, where
+its tags are), and **Shared sections, page tables and the rest**, what is
+committed less every process's commit and the pools (never below 0): shared
+memory such as file mappings, the page tables, and drivers' allocations. On
+2026-10-29, of 72 GB committed, the pools were about 6.4 GB and the rest about
+7 GB.
+
+The host's processes, its helpers and its window are told apart only on a host
+on Windows itself (its own pid is Windows'); the window is a WebView2 under the
+host, or the installed app from `%LOCALAPPDATA%\sh.prifly.app` (its launcher,
+its `bun` and its `bun Helper` renderers). Without WSL there is no WSL VM row.
+A process that ended between the reads counts what Windows still gave for it.
+When the process list cannot be read the card says so, with Windows' words;
+without the memory counters the two rows held by no process are left out.
 
 ## prifly
 

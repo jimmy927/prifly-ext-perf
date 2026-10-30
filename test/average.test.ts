@@ -178,6 +178,13 @@ test("Windows counters average over the lines that had them", () => {
     machine: null,
     wslVmMem: null,
     wslVm: null,
+    standbyCore: null,
+    standbyNormal: null,
+    standbyReserve: null,
+    modified: null,
+    free: null,
+    poolPagedResident: null,
+    cacheResident: null,
   });
   const ring = [line(0, 10), line(1, 20), line(2, null), line(3, 60)];
   const average = averageWindows(ring, 3);

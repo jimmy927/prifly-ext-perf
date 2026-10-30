@@ -29,6 +29,7 @@ import { historyOf } from "./history";
 import { holdersOf, withPools } from "./holders";
 import { HOST } from "./host";
 import { McpConfig } from "./mcp";
+import { memoryMap } from "./memory-map";
 import { newNannyMemory } from "./nanny";
 import { nannyStep } from "./nanny-step";
 import { priflyReport, topLinux, type Usage, usageOf } from "./prifly";
@@ -395,6 +396,22 @@ function holdersStatus(current: State, counters: WindowsCounters | null) {
   return withPools(current.holders, counters);
 }
 
+/**
+ * The Memory tab's two views (`memory-map.ts`): null without Windows (no tab),
+ * `{reading: true}` until the counters and Windows' own info are read.
+ */
+function memoryMapStatus(current: State, counters: WindowsCounters | null) {
+  if (current.windows === null) return null;
+  const map = memoryMap({
+    counters,
+    info: current.info,
+    holders: current.holders === null ? null : withPools(current.holders, counters),
+    tags: current.pools?.tags ?? null,
+    compressed: current.compressed,
+  });
+  return map ?? { reading: true };
+}
+
 /** Everything the page shows, each number averaged over the last `seconds`. */
 function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
@@ -419,6 +436,7 @@ function status(current: State, seconds: number) {
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     holders: holdersStatus(current, windows?.value ?? null),
+    memoryMap: memoryMapStatus(current, windows?.value ?? null),
     others,
     prifly: report,
     // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.
