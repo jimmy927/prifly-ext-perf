@@ -241,13 +241,39 @@ the rest):
   once, but Windows counts it as used and trims and compresses it like a
   program's memory; `autoMemoryReclaim=dropCache` in `.wslconfig` is meant to
   hand it back.
-- **prifly sessions**: the WSL processes the prifly tab counts, by rss, and the
-  anon memory of the containers its sessions started.
+- **prifly sessions**, a group of what the prifly tab counts:
+  - each container a session started, one tile each by its anon memory, named
+    by its compose service (or container name) and the session's title, or the
+    session's folder where it has none: "elasticsearch ·
+    skapa-mojlighet-att-bygga-en-candidate";
+  - **claude ×N**, the sessions' `claude` processes by PSS
+    (`/proc/<pid>/smaps_rollup`'s `Pss:`), so the pages they share count once
+    (measured: 4.9 GB by RSS, 4.0 GB by PSS for 26 of them). It is read only
+    while the Memory tab is shown, at most every 10 s and only for the `claude`
+    processes; a host on Windows itself reads it through the same `wsl.exe`
+    shell (`head -v` of their `smaps_rollup`). Where it cannot be read (another
+    user's process, a failed read) that process counts its RSS, and the tile
+    says so;
+  - **prifly agent and relays** (with the host inside WSL, the host and its
+    helpers too), **MCP servers** and **Session tools** (the shells, tests and
+    builds turns run, and the lands' and git buttons' runs), by RSS.
+
+  The group is the sum of its tiles.
 - **Docker containers**: every other container's anon memory (its cgroup's
   `memory.stat` `anon`), so its file cache is not counted twice.
 - **Other Linux programs**: `AnonPages` + `Shmem` less prifly's and Docker's.
 - **Linux kernel**: `Slab` + `PageTables` + `KernelStack`, and whatever
-  `MemTotal` leaves unaccounted.
+  `MemTotal` leaves unaccounted, as a group:
+  - **Kernel caches**: `SReclaimable`, directory entries and inodes, dropped
+    under pressure;
+  - **Kernel itself**: `SUnreclaim` + `VmallocUsed` + `PageTables` +
+    `KernelStack`;
+  - **Not accounted by Linux**: the rest, never below 0: memory drivers take
+    straight from the page allocator (WSL's GPU and Hyper-V drivers), which
+    Linux does not name.
+
+  A field the kernel does not print leaves its tile out, and the rest is then
+  **Rest of the kernel**; with none of them the kernel is one tile.
 - **Free in the VM**: `MemFree`.
 - **VM overhead**: the VM's commit less what Linux holds.
 
@@ -270,7 +296,9 @@ empty. Each is green, orange or red by the same limits the Memory row uses; a
 counter Windows did not give reads "—" with no colour.
 
 Clicking a tile says on the right what it is, its size, what of it is in RAM,
-and its children. A counter Windows did not give leaves its tile out. Until
+and its children. A tile shows its name and size only where they fit, and the
+line under them (what is in RAM) only where that fits too; a tile too small
+for its name has no label, and its hover text and the detail still name it. A counter Windows did not give leaves its tile out. Until
 the process list is read, or where it cannot be, the programs are one tile and
 the card says why. A Linux host with no Windows has no Memory tab.
 

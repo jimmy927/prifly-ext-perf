@@ -67,9 +67,12 @@ describe("what a container is", () => {
       Labels: {
         "com.docker.compose.project.working_dir": "/home/j/src/threadhawk/infra",
         "com.docker.compose.project.config_files": "/home/j/src/threadhawk/infra/a.yml,/x/b.yml",
+        "com.docker.compose.service": "postgres",
       },
       Mounts: [{ Source: "/var/lib/docker/volumes/pg/_data" }],
     });
+    // The Memory tab names a session's container by its service.
+    expect(info.service).toBe("postgres");
     expect(info.paths).toEqual([
       "/home/j/src/threadhawk/infra",
       "/home/j/src/threadhawk/infra/a.yml",

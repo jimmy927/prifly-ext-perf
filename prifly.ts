@@ -87,11 +87,26 @@ function addContainer(into: Usage, container: Container): void {
   into.cpu += container.cpu;
 }
 
-/** While `priflyReport` reads WSL's table: the pids it counts, for `otherPrograms`. */
-let counting: Set<number> | null = null;
+/**
+ * While `priflyReport` reads WSL's table: the pids it counts, for
+ * `otherPrograms`, and where it is a map, the kind each is counted as (the
+ * Memory tab's WSL tile splits prifly's part by it, `wsl-map.ts`).
+ */
+let counting: Set<number> | Map<number, Kind> | null = null;
+/** The report's kinds while it is read: which `Usage` is which kind. */
+let countingKinds: Record<Kind, Usage> | null = null;
+
+function count(into: Usage, pid: number): void {
+  if (counting instanceof Set) counting.add(pid);
+  else if (counting !== null && countingKinds !== null) {
+    for (const [kind, usage] of Object.entries(countingKinds)) {
+      if (usage === into) counting.set(pid, kind as Kind);
+    }
+  }
+}
 
 function add(into: Usage, proc: Proc): void {
-  counting?.add(proc.pid);
+  count(into, proc.pid);
   into.processes += 1;
   into.rss += proc.rss;
   into.cpu += proc.cpu;
@@ -408,7 +423,7 @@ export type WindowsHost = { procs: Proc[]; hostPid: number };
  * `otherContainers`. `hostPid` is the host in `procs`; null where the host
  * is not in them (a host on Windows itself, whose own processes are
  * `windows`, counted as the host's by the same rules). The pids of `procs`
- * it counts go into `counted`.
+ * it counts go into `counted`; a map gets the kind each is counted as.
  */
 export function priflyReport(
   procs: Proc[],
@@ -417,13 +432,14 @@ export function priflyReport(
   config: McpConfig,
   containers: Container[] = [],
   windows: WindowsHost | null = null,
-  counted: Set<number> = new Set(),
+  counted: Set<number> | Map<number, Kind> = new Set(),
 ): PriflyReport {
   counting = counted;
   try {
     return readReport(procs, hostPid, known, config, containers, windows);
   } finally {
     counting = null;
+    countingKinds = null;
   }
 }
 
@@ -437,6 +453,7 @@ function readReport(
 ): PriflyReport {
   const tree = treeOf(procs);
   const kinds = noKinds();
+  countingKinds = kinds;
   const acc: Acc = { kinds, mcp: new Map(), config };
   const byId = new Map(known.map((session) => [session.id, session]));
   const own: Record<Own, Usage> = {

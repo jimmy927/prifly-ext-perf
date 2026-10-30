@@ -24,7 +24,7 @@ export function biggest(programs: Program[]): Program[] {
  * not count (`counted`), summed by the kernel's name for them. Docker's
  * containers are not among them: their processes are hidden from this table.
  */
-export function otherPrograms(procs: Proc[], counted: Set<number>): Program[] {
+export function otherPrograms(procs: Proc[], counted: Pick<ReadonlySet<number>, "has">): Program[] {
   const byName = new Map<string, Program>();
   for (const proc of procs) {
     if (counted.has(proc.pid) || proc.argv.length === 0) continue;

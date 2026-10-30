@@ -37,6 +37,8 @@ export type ContainerSnapshot = { at: number; containers: Map<string, ContainerR
 export type Container = {
   id: string;
   name: string;
+  /** Its compose service, where Compose started it (`ContainerInfo.service`). */
+  service?: string;
   /** Cores in use over the window. */
   cpu: number;
   memory: number;
@@ -125,8 +127,11 @@ export type ApiContainer = {
   Mounts?: { Source?: string }[] | null;
 };
 
-/** What a container is: its name, and the paths on this side it mounts or was composed from. */
-export type ContainerInfo = { name: string; paths: string[] };
+/**
+ * What a container is: its name, its compose service where Compose started
+ * it, and the paths on this side it mounts or was composed from.
+ */
+export type ContainerInfo = { name: string; service?: string; paths: string[] };
 
 const BIND_LABEL = /^desktop\.docker\.io\/binds\/\d+\/Source$/;
 const COMPOSE_LABELS = [
@@ -145,7 +150,12 @@ export function infoOf(api: ApiContainer): ContainerInfo {
     ...(api.Mounts ?? []).map((mount) => mount.Source ?? ""),
   ].filter((path) => path.startsWith("/") && !path.startsWith("/run/desktop/"));
   const name = (api.Names?.[0] ?? api.Id.slice(0, 12)).replace(/^\//, "");
-  return { name, paths: [...new Set(paths)] };
+  const service = labels["com.docker.compose.service"];
+  return {
+    name,
+    ...(service === undefined || service === "" ? {} : { service }),
+    paths: [...new Set(paths)],
+  };
 }
 
 /** A Claude Code scratchpad: `/tmp/claude-<uid>/<project>/<session id>/…`. */

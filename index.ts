@@ -23,7 +23,7 @@
  */
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
-import { type Container, ownerOf } from "./docker";
+import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
@@ -34,9 +34,8 @@ import { memoryMap } from "./memory-map";
 import { newNannyMemory } from "./nanny";
 import { nannyStep } from "./nanny-step";
 import { pressureOf } from "./pressure";
-import { type PriflyReport, priflyReport, topLinux, type Usage, usageOf } from "./prifly";
+import { type Kind, priflyReport, topLinux, type Usage, usageOf } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
-import type { Proc } from "./procs";
 import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
 import { open, type State } from "./state";
@@ -66,7 +65,7 @@ import { WindowsSampler } from "./windows-sampler";
 import { topProcesses } from "./windows-top";
 import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
-import type { InVm } from "./wsl-map";
+import { type InVm, inVmOf } from "./wsl-map";
 
 const EVERY = 1_000;
 /** The chip judges the last 10 s whether or not the window is open: it must not flicker. */
@@ -334,9 +333,10 @@ function linuxStatus(current: State, sample: LinuxSample | null) {
  * draws the prifly tab, and its WSL tiles, only from one. A host on Windows
  * itself is not in the table: its own Windows processes are `priflyWindows`,
  * null elsewhere and before their first read, and the report counts them as
- * the host's.
+ * the host's. `memoryTab`: the page shows the Memory tab, so the `claude`
+ * processes' PSS is read for its WSL tile.
  */
-function priflyOf(current: State, seconds: number) {
+function priflyOf(current: State, seconds: number, memoryTab: boolean) {
   const { tables } = current;
   const procs = averageProcs(tables.procs, seconds);
   const sessions = current.api.sessions();
@@ -359,7 +359,7 @@ function priflyOf(current: State, seconds: number) {
       inVm: null,
     };
   }
-  const counted = new Set<number>();
+  const counted = new Map<number, Kind>();
   const report = priflyReport(
     procs.value,
     tables.native ? null : process.pid,
@@ -370,31 +370,17 @@ function priflyOf(current: State, seconds: number) {
     counted,
   );
   const others = { linux: otherPrograms(procs.value, counted), windows };
-  const inVm = inVmOf(procs.value, counted, containers, report);
-  return { procs, containers, report, priflyWindows, others, inVm };
-}
-
-/**
- * What prifly and Docker hold in the VM, for the Memory tab's WSL tile: the
- * WSL processes the report counted (`counted`; a host on Windows' own are not
- * among them) and the anon memory of the containers its sessions started,
- * against the anon memory of every other container.
- */
-function inVmOf(
-  procs: Proc[],
-  counted: Set<number>,
-  containers: Container[],
-  report: PriflyReport,
-): InVm {
-  const sessions = new Set(report.sessions.map((row) => row.id));
-  let prifly = 0;
-  let docker = 0;
-  for (const proc of procs) if (counted.has(proc.pid)) prifly += proc.rss;
-  for (const container of containers) {
-    if (sessions.has(container.session)) prifly += container.anon;
-    else docker += container.anon;
+  // The `claude` processes' PSS, for the Memory tab's WSL tile: read only while that tab is open.
+  if (memoryTab) {
+    const claudes = procs.value.filter((proc) => counted.get(proc.pid) === "claude");
+    tables.readPss(
+      claudes.map((proc) => proc.pid),
+      Date.now(),
+    );
   }
-  return { prifly, docker };
+  // What prifly and Docker hold in the VM; a host on Windows' own processes are not among `counted`.
+  const inVm = inVmOf(procs.value, counted, tables.pss, containers, report.sessions);
+  return { procs, containers, report, priflyWindows, others, inVm };
 }
 
 /** Windows' block of the page, from counters already averaged; null where there is no Windows to read. */
@@ -456,12 +442,19 @@ function memoryMapStatus(
   return { ...map, pressure: pressureOf(counters, current.info) };
 }
 
-/** Everything the page shows, each number averaged over the last `seconds`. */
-function status(current: State, seconds: number) {
+/**
+ * Everything the page shows, each number averaged over the last `seconds`;
+ * `memoryTab` while the page shows the Memory tab.
+ */
+function status(current: State, seconds: number, memoryTab: boolean) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
-  const { procs, containers, report, priflyWindows, others, inVm } = priflyOf(current, seconds);
+  const { procs, containers, report, priflyWindows, others, inVm } = priflyOf(
+    current,
+    seconds,
+    memoryTab,
+  );
   const sample = linux?.value ?? null;
   const linuxBlock = linuxStatus(current, sample);
   const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null);
@@ -513,5 +506,8 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
     current.compressions.length = 0;
     refreshWhileOpen(current);
   }
-  return status(current, seconds);
+  // The page names its tab (`panel/app.js`); the PSS read for the Memory tab stops when it leaves.
+  const memoryTab = request.query["tab"] === "memory";
+  if (!memoryTab) current.tables.clearPss();
+  return status(current, seconds, memoryTab);
 }

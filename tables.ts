@@ -18,6 +18,7 @@ import {
   readContainers,
 } from "./docker";
 import { type ProcSnapshot, readProcs } from "./procs";
+import { parsePssRead, pssRead, readPss } from "./pss";
 import { keep } from "./ring";
 import { hostTreeOf, windowsProcessList } from "./windows";
 import { PROCS_READ, parseProcsRead, type WslLinux } from "./wsl-exe";
@@ -26,6 +27,8 @@ import { PROCS_READ, parseProcsRead, type WslLinux } from "./wsl-exe";
 const DOCKER_EVERY = 10_000;
 /** The longest a read through WSL may take; one that takes longer ends the shell, and WSL counts as gone. */
 const WSL_TIMEOUT = 10_000;
+/** The `claude` processes' PSS walks their page tables: at most this often. */
+const PSS_EVERY = 10_000;
 /** The host's own Windows processes: a slower query than a counter, so every 2 s. */
 const WINDOWS_HOST_EVERY = 2_000;
 
@@ -48,7 +51,14 @@ export class Tables {
   dockerInfos = new Map<string, ContainerInfo>();
   /** On a host on Windows itself, the host and all it started there; empty elsewhere. */
   readonly windowsHost: ProcSnapshot[] = [];
+  /**
+   * The PSS of the sessions' `claude` processes, by pid (`pss.ts`), read while
+   * the Memory tab is open; a pid it could not read is absent.
+   */
+  pss = new Map<number, number>();
   private readonly deps: TableDeps;
+  private pssAt = 0;
+  private pssReading = false;
   private dockerAt = 0;
   private procsReading = false;
   private windowsHostAt = 0;
@@ -83,17 +93,57 @@ export class Tables {
     else this.readThroughWsl(wsl, seconds, false);
   }
 
+  /**
+   * While the Memory tab is open: the PSS of `pids` (the `claude` processes),
+   * at most every 10 s, through the shell inside WSL on a host on Windows
+   * itself. A read that fails is logged and leaves the RSS to stand in.
+   */
+  readPss(pids: readonly number[], now: number): void {
+    if (this.pssReading || now - this.pssAt < PSS_EVERY) return;
+    this.pssAt = now;
+    const wsl = this.deps.wsl;
+    if (pids.length === 0) {
+      this.pss = new Map();
+      return;
+    }
+    if (wsl === null) {
+      this.pss = readPss(pids);
+      return;
+    }
+    if (wsl.absent !== "") return;
+    this.pssReading = true;
+    wsl
+      .run(pssRead(pids), WSL_TIMEOUT)
+      .then((out) => {
+        if (wsl.absent === "" && !this.stopped) this.pss = parsePssRead(out);
+      })
+      .catch((error: unknown) => {
+        if (wsl.absent === "") this.deps.log("wsl_pss_failed", { error: String(error) });
+      })
+      .finally(() => {
+        this.pssReading = false;
+      });
+  }
+
+  /** The Memory tab is closed: no PSS is read, and what was is let go of. */
+  clearPss(): void {
+    this.pss = new Map();
+    this.pssAt = 0;
+  }
+
   /** Forgets what was kept: it is from before a gap, and says nothing about now. */
   clear(): void {
     this.procs.length = 0;
     this.containers.length = 0;
     this.windowsHost.length = 0;
+    this.clearPss();
   }
 
   /** WSL is gone: its table and containers go, the host's own Windows processes stay. */
   clearWsl(): void {
     this.procs.length = 0;
     this.containers.length = 0;
+    this.clearPss();
   }
 
   /** No answer that lands after this is kept. */

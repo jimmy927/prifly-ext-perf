@@ -255,11 +255,19 @@ describe("the WSL VM split by what Linux holds", () => {
       shmem: 0.02 * GIB,
       anonPages: 9.37 * GIB,
       slab: 2.06 * GIB,
+      // Not read that day: the kernel stays one tile (wsl-map.test.ts splits it).
+      sReclaimable: Number.NaN,
+      sUnreclaim: Number.NaN,
+      vmallocUsed: Number.NaN,
       pageTables: 0.07 * GIB,
       kernelStack: 0.02 * GIB,
     },
   };
-  const IN_VM = { prifly: 3.2 * GIB, docker: 3.9 * GIB };
+  /** prifly's part as one tile of its group (wsl-map.test.ts has the real children). */
+  const priflyOf = (value: number): Tile[] => [
+    { key: "wsl:prifly:claude", name: "claude", colour: "k-claude", value, why: "" },
+  ];
+  const IN_VM = { prifly: priflyOf(3.2 * GIB), docker: 3.9 * GIB };
   /** The VM as Windows saw it the same day: 23.92 GiB committed, 8.1 GiB of it in RAM. */
   const VM: Holder = {
     key: "wsl",
@@ -335,7 +343,10 @@ describe("the WSL VM split by what Linux holds", () => {
   });
 
   test("no Docker running: no Docker part", () => {
-    const children = find(live({ inVm: { prifly: 3.2 * GIB, docker: 0 } }).commit, "wsl")?.children;
+    const children = find(
+      live({ inVm: { prifly: priflyOf(3.2 * GIB), docker: 0 } }).commit,
+      "wsl",
+    )?.children;
     expect(keys(children ?? [])).not.toContain("wsl:docker");
     expect(gib(children)["wsl:other"]).toBe(6.19);
   });
@@ -347,7 +358,7 @@ describe("the WSL VM split by what Linux holds", () => {
       meminfo: { ...LINUX.meminfo, buffers: 0, cached: 0.01 * GIB, anonPages: Number.NaN },
     };
     // prifly and Docker counted more than Linux says programs hold.
-    const map = live({ linux: odd, inVm: { prifly: 30 * GIB, docker: 30 * GIB } });
+    const map = live({ linux: odd, inVm: { prifly: priflyOf(30 * GIB), docker: 30 * GIB } });
     const all = [...every(map.commit), ...every(map.ram)];
     for (const t of all) {
       expect(Number.isFinite(t.value)).toBe(true);

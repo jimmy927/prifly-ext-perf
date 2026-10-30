@@ -161,6 +161,7 @@ export function averageContainers(
     return {
       id: reading.id,
       name: info.name,
+      ...(info.service === undefined ? {} : { service: info.service }),
       // Microseconds of CPU per second, over a million, is cores.
       cpu: rateOf(first.get(reading.id) ?? reading.usage, reading.usage, span.seconds) / 1e6,
       memory: reading.memory,

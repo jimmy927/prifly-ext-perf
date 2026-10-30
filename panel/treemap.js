@@ -68,16 +68,76 @@ export function find(items, key) {
   return null;
 }
 
-/** A tile's name and size, and the map's own line under them (`opts.note`), where it fits. */
+/**
+ * A label's measures, as `.mlabel` in memtab.css draws it: px per character
+ * of the bold name, of the size after it and of the small line (wide enough
+ * for most words of the system font), each line's height, and the room its
+ * insets leave across and down.
+ */
+const FIT = { name: 7.4, size: 6.8, note: 6.3, line: 16, small: 15, across: 12, down: 6 };
+/** A group's children start this far down: its label has one line there. */
+const GROUP_PAD = 18;
+
+/**
+ * How many lines `words` (each `[text, px per char]`) take wrapped to
+ * `width`, breaking at spaces and after hyphens as the browser does;
+ * Infinity where one piece is wider than the line.
+ */
+function linesOf(words, width) {
+  let lines = 1;
+  let at = 0;
+  for (const [text, px] of words) {
+    for (const piece of text.split(" ").flatMap((w) => w.split(/(?<=-)/))) {
+      const w = piece.length * px;
+      if (w > width) return Number.POSITIVE_INFINITY;
+      const gap = at === 0 ? 0 : px / 2;
+      if (at + gap + w > width) {
+        lines += 1;
+        at = w;
+      } else at += gap + w;
+    }
+  }
+  return lines;
+}
+
+/**
+ * What of a label fits a `w`×`h` tile: "full" (name and size, and the small
+ * line under them), "main" (name and size), or "none". A group's label has
+ * its one line above its children and no small line.
+ */
+export function labelFit(name, size, note, w, h, group = false) {
+  const across = w - FIT.across;
+  const main = linesOf(
+    [
+      [name, FIT.name],
+      [size, FIT.size],
+    ],
+    across,
+  );
+  if (group) return main === 1 && h >= GROUP_PAD ? "main" : "none";
+  const mainHeight = main * FIT.line + FIT.down;
+  if (!(mainHeight <= h)) return "none";
+  if (note === null || note === "") return "main";
+  const small = linesOf([[note, FIT.note]], across);
+  return mainHeight + small * FIT.small <= h ? "full" : "main";
+}
+
+/**
+ * A tile's name and size, and the map's own line under them (`opts.note`),
+ * as much of them as fits (`labelFit`); none where the name does not fit:
+ * the hover text and the detail still name it.
+ */
 function label(item, t, opts) {
-  if (t.w <= 70 || t.h <= 30) return null;
   const note = opts.note?.(item) ?? null;
+  const size = bytes(item.value);
+  const fit = labelFit(item.name, size, note, t.w, t.h, item.children !== undefined);
+  if (fit === "none") return null;
   return el(
     "div",
     { class: "mlabel" },
     el("b", {}, item.name),
-    ` ${bytes(item.value)}`,
-    note === null ? null : el("small", {}, note),
+    ` ${size}`,
+    fit === "full" ? el("small", {}, note) : null,
   );
 }
 
@@ -91,7 +151,7 @@ function tileNode(t, opts) {
   });
   opts.decorate?.(item, node);
   if (item.children && t.w > 40 && t.h > 40) {
-    const pad = 18;
+    const pad = GROUP_PAD;
     for (const c of squarify(item.children, { x: 2, y: pad, w: t.w - 4, h: t.h - pad - 2 }))
       node.append(tileNode(c, opts));
   }

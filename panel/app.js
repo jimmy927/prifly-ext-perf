@@ -376,7 +376,8 @@ function draw(state) {
 /** Asks for the trailing period's averages and draws them; resolves with the seconds they cover. */
 async function refresh(seconds) {
   try {
-    const response = await fetch(`api/status?window=${seconds}`);
+    // The tab shown: the Memory tab's WSL tile needs the `claude` processes' PSS, read only for it.
+    const response = await fetch(`api/status?window=${seconds}&tab=${tabOf()}`);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? response.statusText);
     draw(body);
