@@ -26,6 +26,8 @@ export type ContainerReading = {
   usage: number;
   /** Memory in use, bytes: the cgroup's, less file cache it can drop (as `docker stats` counts it). */
   memory: number;
+  /** Its processes' anonymous memory, bytes (`memory.stat`'s `anon`): none of the VM's file cache. */
+  anon: number;
 };
 
 /** Every container's counters as one read saw them; rates come from two of these (`average.ts`). */
@@ -38,6 +40,8 @@ export type Container = {
   /** Cores in use over the window. */
   cpu: number;
   memory: number;
+  /** Anonymous memory as of the window's end (`ContainerReading.anon`). */
+  anon: number;
   /** The id of the session that started it, or "" when no one session did. */
   session: string;
 };
@@ -73,6 +77,7 @@ export function containerReadingOf(
     id,
     usage: parseCpuStat(cpuStat),
     memory: Math.max(0, Number(memoryCurrent) - inactive),
+    anon: memoryStat(memoryStatText, "anon"),
   };
 }
 

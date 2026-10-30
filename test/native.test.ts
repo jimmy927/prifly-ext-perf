@@ -146,7 +146,7 @@ describe("the process table read through wsl.exe", () => {
 
   test("a container is read from its cgroup; a folder that is no container's is not", () => {
     expect([...read.containers.containers.values()]).toEqual([
-      { id: CONTAINER, usage: 2_000_000, memory: 100_000_000 },
+      { id: CONTAINER, usage: 2_000_000, memory: 100_000_000, anon: 1 },
     ]);
   });
 

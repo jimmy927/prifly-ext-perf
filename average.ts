@@ -16,7 +16,14 @@ import type { Container, ContainerInfo, ContainerSnapshot } from "./docker";
 import { type Proc, type ProcSnapshot, TICKS_PER_SECOND, type Totals } from "./procs";
 import { spanOf } from "./ring";
 import { COUNTERS, type Field, type WindowsCounters } from "./windows";
-import type { LinuxRaw, LinuxSample, Pressure, Stalls } from "./wsl";
+import {
+  type LinuxRaw,
+  type LinuxSample,
+  MEMINFO_FIELDS,
+  type Meminfo,
+  type Pressure,
+  type Stalls,
+} from "./wsl";
 
 /** The windows the panel offers, in seconds. */
 export const WINDOWS = [1, 2, 5, 10, 30, 60, 300];
@@ -80,6 +87,12 @@ export function averageLinux(
     memAvailable: level((raw) => raw.memAvailable),
     swapTotal: end.swapTotal,
     swapUsed: level((raw) => raw.swapUsed),
+    meminfo: Object.fromEntries(
+      Object.keys(MEMINFO_FIELDS).map((field) => [
+        field,
+        level((raw) => raw.meminfo[field as keyof Meminfo]),
+      ]),
+    ) as Meminfo,
     // pgpgin and pgpgout count kB.
     diskRead: rateOf(start.pgpgin, end.pgpgin, span.seconds) * 1024,
     diskWrite: rateOf(start.pgpgout, end.pgpgout, span.seconds) * 1024,
@@ -127,7 +140,7 @@ export function averageProcs(
 
 /**
  * Every container running at the window's end, its CPU averaged over the
- * window the way `averageProcs` does a process's; memory as of the end. What each is and whose comes from `infos` and `owner`; one Docker
+ * window the way `averageProcs` does a process's; memory (and anon) as of the end. What each is and whose comes from `infos` and `owner`; one Docker
  * has not named yet goes by its id.
  */
 export function averageContainers(
@@ -151,6 +164,7 @@ export function averageContainers(
       // Microseconds of CPU per second, over a million, is cores.
       cpu: rateOf(first.get(reading.id) ?? reading.usage, reading.usage, span.seconds) / 1e6,
       memory: reading.memory,
+      anon: reading.anon,
       session: owner(info),
     };
   });

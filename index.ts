@@ -23,7 +23,7 @@
  */
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
-import { ownerOf } from "./docker";
+import { type Container, ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
@@ -34,8 +34,9 @@ import { memoryMap } from "./memory-map";
 import { newNannyMemory } from "./nanny";
 import { nannyStep } from "./nanny-step";
 import { pressureOf } from "./pressure";
-import { priflyReport, topLinux, type Usage, usageOf } from "./prifly";
+import { type PriflyReport, priflyReport, topLinux, type Usage, usageOf } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
+import type { Proc } from "./procs";
 import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
 import { open, type State } from "./state";
@@ -65,6 +66,7 @@ import { WindowsSampler } from "./windows-sampler";
 import { topProcesses } from "./windows-top";
 import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
+import type { InVm } from "./wsl-map";
 
 const EVERY = 1_000;
 /** The chip judges the last 10 s whether or not the window is open: it must not flicker. */
@@ -348,7 +350,14 @@ function priflyOf(current: State, seconds: number) {
   // What "Other" is made of in the Where it goes card; WSL's only once prifly's part is known.
   const windows = windowsPrograms(current.topWindows, windowsHost ?? []);
   if (procs === null) {
-    return { procs, containers, report: null, priflyWindows, others: { linux: [], windows } };
+    return {
+      procs,
+      containers,
+      report: null,
+      priflyWindows,
+      others: { linux: [], windows },
+      inVm: null,
+    };
   }
   const counted = new Set<number>();
   const report = priflyReport(
@@ -361,7 +370,31 @@ function priflyOf(current: State, seconds: number) {
     counted,
   );
   const others = { linux: otherPrograms(procs.value, counted), windows };
-  return { procs, containers, report, priflyWindows, others };
+  const inVm = inVmOf(procs.value, counted, containers, report);
+  return { procs, containers, report, priflyWindows, others, inVm };
+}
+
+/**
+ * What prifly and Docker hold in the VM, for the Memory tab's WSL tile: the
+ * WSL processes the report counted (`counted`; a host on Windows' own are not
+ * among them) and the anon memory of the containers its sessions started,
+ * against the anon memory of every other container.
+ */
+function inVmOf(
+  procs: Proc[],
+  counted: Set<number>,
+  containers: Container[],
+  report: PriflyReport,
+): InVm {
+  const sessions = new Set(report.sessions.map((row) => row.id));
+  let prifly = 0;
+  let docker = 0;
+  for (const proc of procs) if (counted.has(proc.pid)) prifly += proc.rss;
+  for (const container of containers) {
+    if (sessions.has(container.session)) prifly += container.anon;
+    else docker += container.anon;
+  }
+  return { prifly, docker };
 }
 
 /** Windows' block of the page, from counters already averaged; null where there is no Windows to read. */
@@ -400,9 +433,15 @@ function holdersStatus(current: State, counters: WindowsCounters | null) {
 
 /**
  * The Memory tab's two views (`memory-map.ts`): null without Windows (no tab),
- * `{reading: true}` until the counters and Windows' own info are read.
+ * `{reading: true}` until the counters and Windows' own info are read. The
+ * WSL VM's tile is split by `linux` and `inVm` where they are read.
  */
-function memoryMapStatus(current: State, counters: WindowsCounters | null) {
+function memoryMapStatus(
+  current: State,
+  counters: WindowsCounters | null,
+  linux: LinuxSample | null,
+  inVm: InVm | null,
+) {
   if (current.windows === null) return null;
   const map = memoryMap({
     counters,
@@ -410,6 +449,8 @@ function memoryMapStatus(current: State, counters: WindowsCounters | null) {
     holders: current.holders === null ? null : withPools(current.holders, counters),
     tags: current.pools?.tags ?? null,
     compressed: current.compressed,
+    linux,
+    inVm,
   });
   if (map === null || counters === null || current.info === null) return { reading: true };
   return { ...map, pressure: pressureOf(counters, current.info) };
@@ -420,8 +461,9 @@ function status(current: State, seconds: number) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
-  const { procs, containers, report, priflyWindows, others } = priflyOf(current, seconds);
-  const linuxBlock = linuxStatus(current, linux?.value ?? null);
+  const { procs, containers, report, priflyWindows, others, inVm } = priflyOf(current, seconds);
+  const sample = linux?.value ?? null;
+  const linuxBlock = linuxStatus(current, sample);
   const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
@@ -439,7 +481,7 @@ function status(current: State, seconds: number) {
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     holders: holdersStatus(current, windows?.value ?? null),
-    memoryMap: memoryMapStatus(current, windows?.value ?? null),
+    memoryMap: memoryMapStatus(current, windows?.value ?? null, sample, inVm),
     gpuMap: gpuMemoryMap(gpu, current.gpu.history, Date.now()),
     others,
     prifly: report,

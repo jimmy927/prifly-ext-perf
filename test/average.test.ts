@@ -22,6 +22,16 @@ function raw(second: number, over: Partial<LinuxRaw> = {}): LinuxRaw {
     memAvailable: 4000,
     swapTotal: 0,
     swapUsed: 0,
+    meminfo: {
+      memFree: 0,
+      buffers: 0,
+      cached: 0,
+      shmem: 0,
+      anonPages: 0,
+      slab: 0,
+      pageTables: 0,
+      kernelStack: 0,
+    },
     cpu: null,
     memory: null,
     io: null,
@@ -130,6 +140,17 @@ test("levels are the mean of the samples in the window", () => {
   expect(average?.value.memAvailable).toBeCloseTo(850, 6);
   expect(average?.value.runnable).toBeCloseTo(2, 6);
   expect(average?.value.load[0]).toBeCloseTo(8.5, 6);
+});
+
+test("meminfo's fields are levels, each the mean of the samples in the window", () => {
+  const ring = linuxRing(10, (second) => ({
+    meminfo: { ...raw(0).meminfo, cached: second * 100, anonPages: 50 },
+  }));
+  const average = averageLinux(ring, 5);
+  // The reads after the window's start: seconds 6 to 10.
+  expect(average?.value.meminfo.cached).toBeCloseTo(800, 6);
+  expect(average?.value.meminfo.anonPages).toBe(50);
+  expect(average?.value.meminfo.slab).toBe(0);
 });
 
 test("time stalled is exact over the window, and stays absent without PSI", () => {

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { averageContainers } from "../average";
-import { type ContainerSnapshot, infoOf, memoryStat, ownerOf, parseCpuStat } from "../docker";
+import {
+  type ContainerSnapshot,
+  containerReadingOf,
+  infoOf,
+  memoryStat,
+  ownerOf,
+  parseCpuStat,
+} from "../docker";
 import type { McpConfig } from "../mcp";
 import { priflyReport } from "../prifly";
 import type { Proc } from "../procs";
@@ -23,6 +30,16 @@ describe("cgroup files", () => {
 
   test("memory.stat gives a field in bytes", () => {
     expect(memoryStat("anon 100\ninactive_file 4096\nactive_file 9\n", "inactive_file")).toBe(4096);
+  });
+
+  test("a container's anon memory is memory.stat's anon, none of its file cache", () => {
+    const stat = "anon 3000\nfile 9000\ninactive_file 4000\n";
+    expect(containerReadingOf("c", "usage_usec 5\n", "12000\n", stat)).toEqual({
+      id: "c",
+      usage: 5,
+      memory: 8000,
+      anon: 3000,
+    });
   });
 });
 
@@ -96,7 +113,7 @@ describe("containers over a window", () => {
   const id = "a".repeat(64);
   const snap = (second: number, usage: number): ContainerSnapshot => ({
     at: 1_000_000 + second * 1000,
-    containers: new Map([[id, { id, usage, memory: 2 ** 30 }]]),
+    containers: new Map([[id, { id, usage, memory: 2 ** 30, anon: 2 ** 29 }]]),
   });
   const ring = [snap(0, 0), snap(1, 500_000), snap(2, 3_000_000)];
   const infos = new Map([[id, { name: "bot", paths: [] }]]);
@@ -108,6 +125,7 @@ describe("containers over a window", () => {
       name: "bot",
       cpu: 1.5,
       memory: 2 ** 30,
+      anon: 2 ** 29,
       session: A,
     });
   });
@@ -133,6 +151,7 @@ test("a session's containers count in its row, the rest beside prifly", () => {
     name,
     cpu: 2,
     memory: 100,
+    anon: 60,
     session,
   });
   const config = { forFolder: () => [] } as unknown as McpConfig;

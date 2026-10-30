@@ -2,13 +2,16 @@
 // as big as what it holds. One is what Windows has promised (commit charge
 // against its limit, which is what runs out); the other is what sits in RAM
 // now. The programs come from who holds Windows' memory (`holders.ts`), the
-// kernel pools' biggest tags from `poolTags`, the rest from typeperf.
+// kernel pools' biggest tags from `poolTags`, the rest from typeperf. The WSL
+// VM's tile is split by what Linux says it holds (`/proc/meminfo`, the prifly
+// report, Docker's cgroups) wherever Linux is read (`wsl-map.ts`).
 //
 // A counter Windows did not give leaves its tile out: never a 0 that looks read.
 
 import type { Holder, Holders } from "./holders";
 import type { WindowsCounters, WindowsInfo } from "./windows";
 import type { PoolTag } from "./windows-memory";
+import { type InVm, splitWsl, splitWslRam, type VmLinux } from "./wsl-map";
 
 /**
  * One tile: its colour class on the panel (`k-…`), its bytes, and in the
@@ -52,6 +55,10 @@ export type MemoryMapInput = {
   tags: PoolTag[] | null;
   /** The `Memory Compression` process's working set: the compression store in RAM. */
   compressed: number | null;
+  /** Linux's read of the VM, averaged; null where there is none (WSL not running, or no WSL). */
+  linux?: VmLinux | null;
+  /** What prifly's and Docker's processes hold in the VM; null until the process table is read. */
+  inVm?: InVm | null;
 };
 
 /** A paged pool tag gets a tile of its own from this share of the paged pool. */
@@ -240,7 +247,10 @@ function commitView(input: MemoryMapInput, c: WindowsCounters): Tile[] {
   const pools = poolTile(c, holders, tags);
   const tiles: Tile[] = [];
   if (readable(holders)) {
-    tiles.push(...programTiles(holders));
+    const { linux = null, inVm = null } = input;
+    tiles.push(
+      ...programTiles(holders).map((t) => (t.key === "wsl" ? splitWsl(t, linux, inVm) : t)),
+    );
     if (holders.shared !== null) {
       tiles.push({
         key: "shared",
@@ -330,6 +340,12 @@ function systemTiles(c: WindowsCounters, compressed: number | null): Tile[] {
   ];
 }
 
+/** The VM's commit, where the process list gave it: what the WSL tiles' VM overhead is from. */
+function wslCommit(holders: Holders | null): number | null {
+  if (!readable(holders)) return null;
+  return holders.groups.find((g) => g.key === "wsl")?.commit ?? null;
+}
+
 /**
  * What of RAM is left for the programs: RAM less what is idle (standby and
  * free, else what Windows counts as available) and less every other in-use
@@ -360,7 +376,11 @@ function inRam(tile: Tile, scale: number): Tile {
  * to what is left of RAM in use; any RAM left over after them has a tile.
  */
 function ramView(input: MemoryMapInput, c: WindowsCounters, ramTotal: number) {
-  const system = systemTiles(c, input.compressed);
+  const { linux = null, inVm = null } = input;
+  const commit = wslCommit(input.holders);
+  const system = systemTiles(c, input.compressed).map((t) =>
+    t.key === "wslram" ? splitWslRam(t, linux, inVm, commit) : t,
+  );
   const budget = programBudget(c, ramTotal, system);
   const tiles = [...system];
   if (!readable(input.holders)) {

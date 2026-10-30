@@ -242,3 +242,127 @@ describe("what is missing", () => {
     expect(total(map.ram)).toBe(GB(48));
   });
 });
+
+describe("the WSL VM split by what Linux holds", () => {
+  const GIB = 2 ** 30;
+  /** /proc/meminfo in the VM, read live on 2026-10-30 (GiB); KernelStack is a guess. */
+  const LINUX = {
+    memTotal: 23.47 * GIB,
+    meminfo: {
+      memFree: 0.41 * GIB,
+      buffers: 6.34 * GIB,
+      cached: 4.21 * GIB,
+      shmem: 0.02 * GIB,
+      anonPages: 9.37 * GIB,
+      slab: 2.06 * GIB,
+      pageTables: 0.07 * GIB,
+      kernelStack: 0.02 * GIB,
+    },
+  };
+  const IN_VM = { prifly: 3.2 * GIB, docker: 3.9 * GIB };
+  /** The VM as Windows saw it the same day: 23.92 GiB committed, 8.1 GiB of it in RAM. */
+  const VM: Holder = {
+    key: "wsl",
+    name: "WSL VM",
+    commit: 23.92 * GIB,
+    ram: 8.1 * GIB,
+    processes: [{ pid: 1, name: "vmmem", commit: 23.92 * GIB, ram: 8.1 * GIB }],
+  };
+  const live = (over: Partial<MemoryMapInput> = {}) =>
+    mapOf({
+      counters: { ...COUNTED, wslVmMem: 8.1 * GIB },
+      holders: holdersOf([VM, ...GROUPS.filter((g) => g.key !== "wsl")]),
+      linux: LINUX,
+      inVm: IN_VM,
+      ...over,
+    });
+  const gib = (tiles: Tile[] | undefined) =>
+    Object.fromEntries((tiles ?? []).map((t) => [t.key, Math.round((t.value / GIB) * 100) / 100]));
+
+  test("promised: the parts by Linux's account add up to the VM's commit", () => {
+    const wsl = find(live().commit, "wsl");
+    expect(gib(wsl?.children)).toEqual({
+      "wsl:cache": 10.53,
+      "wsl:prifly": 3.2,
+      "wsl:docker": 3.9,
+      "wsl:other": 2.29,
+      // Slab, page tables and kernel stacks (2.15), and the 0.99 MemTotal leaves unaccounted.
+      "wsl:kernel": 3.14,
+      "wsl:free": 0.41,
+      "wsl:overhead": 0.45,
+    });
+    expect(total(wsl?.children ?? [])).toBeCloseTo(23.92 * GIB, -3);
+    expect(wsl?.value).toBeCloseTo(23.92 * GIB, -3);
+    expect(wsl?.name).toBe("WSL VM");
+  });
+
+  test("promised: each part's RAM is its share of the VM's working set, and the tile says so", () => {
+    const wsl = find(live().commit, "wsl");
+    const share = 8.1 / 23.92;
+    for (const child of wsl?.children ?? []) {
+      expect(child.ram).toBeCloseTo(child.value * share, -3);
+    }
+    expect(wsl?.ram).toBeCloseTo(8.1 * GIB, -3);
+    expect(wsl?.why).toMatch(/average in-RAM share: 34 %/);
+    expect(find(wsl?.children ?? [], "wsl:cache")?.why).toMatch(/autoMemoryReclaim=dropCache/);
+  });
+
+  test("in RAM: the VM's tile is split the same way, scaled to its working set", () => {
+    const wsl = find(live().ram, "wslram");
+    expect(wsl?.value).toBe(8.1 * GIB);
+    expect(total(wsl?.children ?? [])).toBeCloseTo(8.1 * GIB, -3);
+    const cache = find(wsl?.children ?? [], "ram:wsl:cache");
+    expect(cache?.value).toBeCloseTo((10.53 * GIB * 8.1) / 23.92, -6);
+    expect(cache?.name).toBe("Linux file cache");
+  });
+
+  test("no Linux read: the VM's tile stays whole in both views", () => {
+    const map = live({ linux: null });
+    expect(find(map.commit, "wsl")?.children).toBeUndefined();
+    expect(find(map.commit, "wsl")?.value).toBe(23.92 * GIB);
+    expect(find(map.ram, "wslram")?.children).toBeUndefined();
+  });
+
+  test("no process table yet: no prifly or Docker part, the programs one tile", () => {
+    const parts = gib(find(live({ inVm: null }).commit, "wsl")?.children);
+    expect(parts).toEqual({
+      "wsl:cache": 10.53,
+      "wsl:programs": 9.39,
+      "wsl:kernel": 3.14,
+      "wsl:free": 0.41,
+      "wsl:overhead": 0.45,
+    });
+  });
+
+  test("no Docker running: no Docker part", () => {
+    const children = find(live({ inVm: { prifly: 3.2 * GIB, docker: 0 } }).commit, "wsl")?.children;
+    expect(keys(children ?? [])).not.toContain("wsl:docker");
+    expect(gib(children)["wsl:other"]).toBe(6.19);
+  });
+
+  test("odd readings give no NaN and no part below 0, and still add up to the commit", () => {
+    const odd = {
+      memTotal: 23.47 * GIB,
+      // Shmem over the cache, no AnonPages read, and a NaN.
+      meminfo: { ...LINUX.meminfo, buffers: 0, cached: 0.01 * GIB, anonPages: Number.NaN },
+    };
+    // prifly and Docker counted more than Linux says programs hold.
+    const map = live({ linux: odd, inVm: { prifly: 30 * GIB, docker: 30 * GIB } });
+    const all = [...every(map.commit), ...every(map.ram)];
+    for (const t of all) {
+      expect(Number.isFinite(t.value)).toBe(true);
+      expect(t.value).toBeGreaterThanOrEqual(0);
+      if (t.ram !== undefined) expect(Number.isFinite(t.ram)).toBe(true);
+    }
+    const wsl = find(map.commit, "wsl");
+    expect(keys(wsl?.children ?? [])).not.toContain("wsl:cache");
+    expect(total(wsl?.children ?? [])).toBeCloseTo(23.92 * GIB, -3);
+  });
+
+  test("Linux holding more than the VM's commit is scaled down to it", () => {
+    const big = { ...LINUX, memTotal: 30 * GIB };
+    const wsl = find(live({ linux: big }).commit, "wsl");
+    expect(keys(wsl?.children ?? [])).not.toContain("wsl:overhead");
+    expect(total(wsl?.children ?? [])).toBeCloseTo(23.92 * GIB, -3);
+  });
+});

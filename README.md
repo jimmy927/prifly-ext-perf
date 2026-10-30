@@ -233,6 +233,33 @@ tab's Windows Memory row links to it. Two views of the same machine:
   use, and the legend says by how much; RAM in use that the programs do not
   fill is a tile of its own.
 
+Wherever Linux in the VM is read, the **WSL VM** tile in both views is split
+by what Linux says it holds (`/proc/meminfo`, averaged over the window like
+the rest):
+
+- **Linux file cache**: `Buffers` + `Cached` − `Shmem`. Linux could drop it at
+  once, but Windows counts it as used and trims and compresses it like a
+  program's memory; `autoMemoryReclaim=dropCache` in `.wslconfig` is meant to
+  hand it back.
+- **prifly sessions**: the WSL processes the prifly tab counts, by rss, and the
+  anon memory of the containers its sessions started.
+- **Docker containers**: every other container's anon memory (its cgroup's
+  `memory.stat` `anon`), so its file cache is not counted twice.
+- **Other Linux programs**: `AnonPages` + `Shmem` less prifly's and Docker's.
+- **Linux kernel**: `Slab` + `PageTables` + `KernelStack`, and whatever
+  `MemTotal` leaves unaccounted.
+- **Free in the VM**: `MemFree`.
+- **VM overhead**: the VM's commit less what Linux holds.
+
+In the promised view the parts add up to the VM's commit. Windows does not say
+which of the VM's pages it trimmed, so each part's solid share is the VM's
+average (its working set over its commit), as the tile's text says. In the RAM
+view the same parts are scaled to the VM's working set. Before the process
+table is read (the window just opened), prifly and Docker have no tile of
+their own and the programs are one **Linux programs** tile; with no Docker
+running there is no Docker tile; with no Linux read (WSL not running) the VM
+stays one tile.
+
 Above the treemap, a **pressure strip** shows how hard Windows is working to
 make room, which a treemap cannot: three readings side by side, each with the
 last hour as a line. **Commit** is how full Windows' promises are (91 % of 75
@@ -387,7 +414,9 @@ you are.
 - **WSL**: `/proc/pressure/{cpu,memory,io}`, `/proc/stat`, `/proc/meminfo`,
   `/proc/vmstat` and `/proc/loadavg`, every second, the last hour kept. This is the WSL VM's single
   kernel, so Docker Desktop's containers count in these totals. They run in a
-  distro of their own, though, so they never appear in the process list.
+  distro of their own, though, so they never appear in the process list; their
+  cgroups (`cpu.stat`, `memory.current`, `memory.stat`) are read with the
+  process list.
 - **Windows**: one `typeperf.exe` at a time, always running, that prints its counters
   every second, the last hour kept. Each ends by itself after 50 samples and the next is started a few seconds before, so a host that dies without a word (SIGKILL) leaves none running for more than about a minute; the host's exit and SIGTERM/SIGINT end it at once. If one ends early, it is started again in 30 s. One `powershell.exe` is started on first
   use and stays running (no console flashing up); it reads the machine's name, cores and
