@@ -80,8 +80,8 @@ describe("Windows counters", () => {
       "c|idle|% processor time|200",
     ].join("\r\n");
     expect(sumByName(out)).toEqual([
-      { name: "vmmemwsl", cpu: 12.56, kernel: 0, commit: 0, ram: 0 },
-      { name: "msedgewebview2", cpu: 0.8, kernel: 0, commit: 0, ram: 0 },
+      { name: "vmmemwsl", cpu: 12.56, kernel: 0, commit: 0, ram: 0, faults: 0 },
+      { name: "msedgewebview2", cpu: 0.8, kernel: 0, commit: 0, ram: 0, faults: 0 },
     ]);
   });
 
@@ -102,9 +102,22 @@ describe("Windows counters", () => {
       "702|600|639000000000000000|dwm.exe|0|200|0|0|1650|dwm.exe",
     ].join("\r\n");
     expect(sumByName(out)).toEqual([
-      { name: "bun", cpu: 1, kernel: 0.9, commit: 13000, ram: 3500 },
-      { name: "docker-desktop", cpu: 0.92, kernel: 0.9, commit: 0, ram: 0 },
-      { name: "dwm", cpu: 0, kernel: 0, commit: 1650, ram: 200 },
+      { name: "bun", cpu: 1, kernel: 0.9, commit: 13000, ram: 3500, faults: 0 },
+      { name: "docker-desktop", cpu: 0.92, kernel: 0.9, commit: 0, ram: 0, faults: 0 },
+      { name: "dwm", cpu: 0, kernel: 0, commit: 1650, ram: 200, faults: 0 },
+    ]);
+  });
+
+  test("page faults a second are summed by name, with the total and idle left out", () => {
+    const out = [
+      "c|svchost|page faults/sec|9000",
+      "c|svchost#1|page faults/sec|1963.5",
+      "c|svchost|% processor time|10",
+      "c|_total|page faults/sec|50000",
+      "c|idle|page faults/sec|0",
+    ].join("\r\n");
+    expect(sumByName(out)).toEqual([
+      { name: "svchost", cpu: 0.1, kernel: 0, commit: 0, ram: 0, faults: 10963.5 },
     ]);
   });
 

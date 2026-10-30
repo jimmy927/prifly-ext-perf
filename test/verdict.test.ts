@@ -91,6 +91,9 @@ describe("Windows", () => {
     pagesOut: 0,
     transitionFaults: 2000,
     demandZeroFaults: 3000,
+    pageFaults: null,
+    cacheFaults: null,
+    pagesInput: null,
     pageFile: 5,
     diskIdle: 99,
     readLatency: 0.002,
@@ -143,6 +146,9 @@ describe("Windows", () => {
     pagesOut: 0,
     transitionFaults: 138_000,
     demandZeroFaults: 98_000,
+    pageFaults: null,
+    cacheFaults: null,
+    pagesInput: null,
   };
 
   test("heavy trimming is out of memory with nothing written to the page file", () => {

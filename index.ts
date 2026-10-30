@@ -441,7 +441,14 @@ function memoryMapStatus(
     inVm,
   });
   if (map === null || counters === null || current.info === null) return { reading: true };
-  return { ...map, pressure: pressureOf(counters, current.info) };
+  return {
+    ...map,
+    pressure: pressureOf(
+      counters,
+      current.info,
+      current.holders === null ? null : current.topWindows,
+    ),
+  };
 }
 
 /**

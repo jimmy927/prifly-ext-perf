@@ -47,6 +47,12 @@ export const COUNTERS = {
   // Windows squeezing memory. A demand-zero fault is a fresh zeroed page.
   transitionFaults: "\\Memory\\Transition Faults/sec",
   demandZeroFaults: "\\Memory\\Demand Zero Faults/sec",
+  // The other kinds of fault, for the Trimming reading's bars: all faults, the
+  // ones answered from the file cache, and the pages read from disk
+  // (`pressure.ts` `faultsOf`).
+  pageFaults: "\\Memory\\Page Faults/sec",
+  cacheFaults: "\\Memory\\Cache Faults/sec",
+  pagesInput: "\\Memory\\Pages Input/sec",
   pageFile: "\\Paging File(_Total)\\% Usage",
   diskIdle: "\\PhysicalDisk(_Total)\\% Idle Time",
   readLatency: "\\PhysicalDisk(_Total)\\Avg. Disk sec/Read",

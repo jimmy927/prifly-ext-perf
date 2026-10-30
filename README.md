@@ -295,6 +295,30 @@ could get now: free and zeroed pages plus standby, with how much of it is
 empty. Each is green, orange or red by the same limits the Memory row uses; a
 counter Windows did not give reads "—" with no colour.
 
+Under the Trimming number, small bars show what is being faulted back in, one
+per kind of page fault, each as long as its share of all page faults
+(`\Memory\Page Faults/sec`), with its rate (back from trimming 30k/s). Hover a
+bar for what the kind is:
+
+- **back from trimming**: `Transition Faults/sec`, pages Windows took out of a
+  program and handed back;
+- **new zeroed pages**: `Demand Zero Faults/sec`, fresh memory a program asked for;
+- **from the file cache**: `Cache Faults/sec`;
+- **from disk**: `Pages Input/sec`, pages read from the disk or the page file;
+- **other kinds**: `Page Faults/sec` less the four above, never below 0
+  (copy-on-write, guard pages).
+
+A counter Windows did not give leaves its bar out, and "other kinds" too
+without `Page Faults/sec`; with no faults at all there are no bars. A muted line
+under them names the three programs faulting most, from
+`\Process(*)\Page Faults/sec` (all kinds together; no counter splits a process's
+faults by kind), summed per program in the same 10 s read as the busiest
+processes, and, when it is over 10 % of all page faults, the faults no
+process's counter holds ("98k/s in no process's counter"). On the machine this
+was written on, 98k/s of 145k/s was in no process: the WSL VM's memory, which
+Windows counts under the VM and not under a process, is the likely cause. The
+line waits for that first 10 s read.
+
 Clicking a tile says on the right what it is, its size, what of it is in RAM,
 and its children. A tile shows its name and size only where they fit, and the
 line under them (what is in RAM) only where that fits too; a tile too small

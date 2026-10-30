@@ -4,6 +4,7 @@
  * (`windowsMemoryChecks`), so the strip and the Memory row never disagree.
  */
 
+import { type Faults, faultsOf, type ProcessFaults } from "./faults";
 import { standbyOf } from "./memory-map";
 import {
   gb,
@@ -28,6 +29,8 @@ export type Reading = {
   tone: Tone | null;
   /** The least value the sparkline's top is at: a calm line stays low. */
   ceiling: number;
+  /** The Trimming reading only: what is being faulted back in; absent where no fault was counted. */
+  faults?: Faults;
 };
 
 const MISSING = "—";
@@ -44,11 +47,16 @@ export function reallyFree(c: WindowsCounters): number | null {
 }
 
 /** The strip's three readings for `c`, each toned by the matching memory check. */
-export function pressureOf(c: WindowsCounters, info: WindowsInfo): Reading[] {
+export function pressureOf(
+  c: WindowsCounters,
+  info: WindowsInfo,
+  processes: readonly ProcessFaults[] | null = null,
+): Reading[] {
   const checks = windowsMemoryChecks(c, info);
   const toneOf = (what: MemoryCheck["what"]): Tone | null =>
     checks.find((check) => check.what === what)?.tone ?? null;
   const free = reallyFree(c);
+  const faults = faultsOf(c, processes);
   const empty = standbyOf(c) !== null && c.free !== null ? `${gb(c.free)} empty` : "";
   return [
     {
@@ -68,6 +76,7 @@ export function pressureOf(c: WindowsCounters, info: WindowsInfo): Reading[] {
       small: "",
       tone: toneOf("trimming"),
       ceiling: TRIMMING_CRITICAL,
+      ...(faults === null ? {} : { faults }),
     },
     {
       key: "free",

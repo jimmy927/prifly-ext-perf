@@ -220,6 +220,49 @@
   font-size: 12.5px;
   margin-bottom: 6px;
 }
+/* The Trimming reading's page faults: a bar per kind, its length its share of all faults. */
+.pfaults {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 10px;
+  font-size: 11.5px;
+}
+.pfault {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pftext {
+  color: var(--muted-fg);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pftrack {
+  display: block;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--muted);
+}
+.pffill {
+  display: block;
+  height: 100%;
+  min-width: 1px;
+  border-radius: 2px;
+  background: var(--work);
+}
+.pfault.transition .pffill {
+  background: var(--warning);
+}
+.pfault.other .pffill {
+  background: var(--neutral);
+}
+.pfmost {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+}
 /* The Machine tab's Memory row: its link to this tab. */
 .metric a.tomemory {
   display: block;

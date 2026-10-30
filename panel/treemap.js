@@ -224,7 +224,33 @@ export function strip(readings, valuesOf, part) {
         el("span", { class: "pvalue" }, r.main, r.small === "" ? null : el("small", {}, r.small)),
         el("span", { class: "pmeans muted" }, r.means),
         spark(values, Math.max(r.ceiling, ...values)),
+        r.faults ? faultBars(r.faults) : null,
       );
     }),
+  );
+}
+
+/**
+ * Under the Trimming reading: one small bar per kind of page fault, as long as
+ * its share of all of them, with its label and rate (hover: what the kind is),
+ * and under them a muted line on which programs fault most (`faults.ts`).
+ */
+function faultBars(faults) {
+  return el(
+    "div",
+    { class: "pfaults", "data-part": "faults" },
+    ...faults.bars.map((b) =>
+      el(
+        "div",
+        { class: `pfault ${b.key}`, title: b.means },
+        el("span", { class: "pftext" }, b.text),
+        el(
+          "span",
+          { class: "pftrack" },
+          el("span", { class: "pffill", style: `width:${(100 * b.share).toFixed(1)}%` }),
+        ),
+      ),
+    ),
+    faults.most === null ? null : el("p", { class: "pfmost muted" }, faults.most),
   );
 }
