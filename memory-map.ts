@@ -278,7 +278,7 @@ function reading(key: string, name: string, colour: string, value: number | null
 }
 
 /** Standby in its three priorities, added up; null unless all three were read. */
-function standbyOf(c: WindowsCounters): number | null {
+export function standbyOf(c: WindowsCounters): number | null {
   if (c.standbyCore === null || c.standbyNormal === null || c.standbyReserve === null) return null;
   return c.standbyCore + c.standbyNormal + c.standbyReserve;
 }

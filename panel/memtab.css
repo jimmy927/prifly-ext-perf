@@ -161,6 +161,53 @@
   padding: 3px 6px 3px 0;
   font-size: 12px;
 }
+/* The pressure strip: three readings side by side, above the treemap. */
+#memtab .card.pressure {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-bottom: 14px;
+}
+.pread {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
+}
+.pread:first-child {
+  border-left: 0;
+}
+.pname {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-fg);
+}
+.pvalue {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+}
+.pvalue small {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-fg);
+}
+.pread.good .pvalue {
+  color: var(--good);
+}
+.pread.warning .pvalue {
+  color: var(--warning);
+}
+.pread.critical .pvalue {
+  color: var(--critical);
+}
+.pmeans {
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
 /* The Machine tab's Memory row: its link to this tab. */
 .metric a.tomemory {
   display: block;

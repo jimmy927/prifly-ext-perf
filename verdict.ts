@@ -62,15 +62,15 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
  * orange; red below the 25th. No calm reading exists yet (WSL's way into
  * Windows died at 17:48), so a calm machine's level is not known.
  */
-const TRIMMING_WARNING = 30_000;
-const TRIMMING_CRITICAL = 80_000;
+export const TRIMMING_WARNING = 30_000;
+export const TRIMMING_CRITICAL = 80_000;
 
 /** Bytes in a kernel pool past which it is abnormal: usual is a few hundred MB, and 4.7 GB was a token leak. */
 export const POOL_ABNORMAL = 2 * 2 ** 30;
 
 const GiB = 2 ** 30;
-const gb = (n: number): string => `${(n / GiB).toFixed(1)} GB`;
-const thousands = (n: number): string =>
+export const gb = (n: number): string => `${(n / GiB).toFixed(1)} GB`;
+export const thousands = (n: number): string =>
   n < 1000 ? `${Math.round(n)}` : `${Math.round(n / 1000)}k`;
 
 /** What Windows memory was judged by: one check, its colour and what it says. */

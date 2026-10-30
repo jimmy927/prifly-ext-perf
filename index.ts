@@ -32,6 +32,7 @@ import { McpConfig } from "./mcp";
 import { memoryMap } from "./memory-map";
 import { newNannyMemory } from "./nanny";
 import { nannyStep } from "./nanny-step";
+import { pressureOf } from "./pressure";
 import { priflyReport, topLinux, type Usage, usageOf } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { otherPrograms, windowsPrograms } from "./programs";
@@ -409,7 +410,8 @@ function memoryMapStatus(current: State, counters: WindowsCounters | null) {
     tags: current.pools?.tags ?? null,
     compressed: current.compressed,
   });
-  return map ?? { reading: true };
+  if (map === null || counters === null || current.info === null) return { reading: true };
+  return { ...map, pressure: pressureOf(counters, current.info) };
 }
 
 /** Everything the page shows, each number averaged over the last `seconds`. */

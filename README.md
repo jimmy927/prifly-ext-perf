@@ -231,6 +231,15 @@ tab's Windows Memory row links to it. Two views of the same machine:
   use, and the legend says by how much; RAM in use that the programs do not
   fill is a tile of its own.
 
+Above the treemap, a **pressure strip** shows how hard Windows is working to
+make room, which a treemap cannot: three readings side by side, each with the
+last hour as a line. **Commit** is how full Windows' promises are (91 % of 75
+GB). **Trimming** is pages Windows takes from programs and gives back, in
+transition faults a second (11k pages/s). **RAM really free** is what a program
+could get now: free and zeroed pages plus standby, with how much of it is
+empty. Each is green, orange or red by the same limits the Memory row uses; a
+counter Windows did not give reads "—" with no colour.
+
 Clicking a tile says on the right what it is, its size, what of it is in RAM,
 and its children. A counter Windows did not give leaves its tile out. Until
 the process list is read, or where it cannot be, the programs are one tile and

@@ -5,7 +5,7 @@
 // RAM; the striped rest Windows has trimmed out (compressed, in the page file,
 // or never touched). A click on a tile says what it is, on the right.
 
-import { $, bytes, el } from "./format.js";
+import { $, bytes, el, spark } from "./format.js";
 
 /** Which view is shown, and which tile is picked: kept across the redraw every second. */
 let view = "commit";
@@ -236,6 +236,34 @@ function mapCard(m, state) {
   );
 }
 
+/** The history field each reading's sparkline draws (history.ts). */
+const SERIES = { commit: "committed", trimming: "trimming", free: "free" };
+
+/**
+ * The pressure strip: three readings of how hard Windows works to make room,
+ * each coloured as the memory verdict colours it, with the last hour beside it.
+ * A reading with no counter shows "—" and no colour; no history, an empty line.
+ */
+function pressureStrip(m, state) {
+  return el(
+    "div",
+    { class: "card pressure", "data-part": "pressure" },
+    ...(m.pressure ?? []).map((r) => {
+      const values = (state.history ?? [])
+        .map((point) => point.windows?.[SERIES[r.key]])
+        .filter((v) => typeof v === "number");
+      return el(
+        "div",
+        { class: `pread ${r.tone ?? "neutral"}` },
+        el("span", { class: "pname" }, r.name),
+        el("span", { class: "pvalue" }, r.main, r.small === "" ? null : el("small", {}, r.small)),
+        el("span", { class: "pmeans muted" }, r.means),
+        spark(values, Math.max(r.ceiling, ...values)),
+      );
+    }),
+  );
+}
+
 /**
  * Draws the tab into `#memtab`. Where there is no Windows (`memoryMap` null)
  * the tab's button is hidden, and the tab, reached by its link, says so.
@@ -254,7 +282,7 @@ export function drawMemoryTab(state) {
     $("memtab").replaceChildren(el("p", { class: "muted" }, "Reading Windows' memory…"));
     return;
   }
-  $("memtab").replaceChildren(mapCard(m, state));
+  $("memtab").replaceChildren(pressureStrip(m, state), mapCard(m, state));
 }
 
 /** Draws the tab again, as when it is shown: hidden, it had no width to lay out to. */
