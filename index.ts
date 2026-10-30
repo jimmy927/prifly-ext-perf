@@ -422,12 +422,14 @@ function holdersStatus(current: State, counters: WindowsCounters | null) {
 /**
  * The Memory tab's two views (`memory-map.ts`): null without Windows (no tab),
  * `{reading: true}` until the counters and Windows' own info are read. The
- * WSL VM's tile is split by `linux` and `inVm` where they are read.
+ * WSL VM's tile is split by `linux` and `inVm` where they are read, and says
+ * why it is whole where `linux` is not (`linuxAbsent`, the Machine tab's).
  */
 function memoryMapStatus(
   current: State,
   counters: WindowsCounters | null,
   linux: LinuxSample | null,
+  linuxAbsent: string,
   inVm: InVm | null,
 ) {
   if (current.windows === null) return null;
@@ -438,6 +440,7 @@ function memoryMapStatus(
     tags: current.pools?.tags ?? null,
     compressed: current.compressed,
     linux,
+    linuxAbsent,
     inVm,
   });
   if (map === null || counters === null || current.info === null) return { reading: true };
@@ -446,9 +449,10 @@ function memoryMapStatus(
 
 /**
  * Everything the page shows, each number averaged over the last `seconds`;
- * `memoryTab` while the page shows the Memory tab.
+ * `memoryTab` while the page shows the Memory tab. Exported for the tests,
+ * which build a `State` as a host fills it; `panel` is what the page calls.
  */
-function status(current: State, seconds: number, memoryTab: boolean) {
+export function status(current: State, seconds: number, memoryTab: boolean) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
@@ -476,7 +480,13 @@ function status(current: State, seconds: number, memoryTab: boolean) {
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
     holders: holdersStatus(current, windows?.value ?? null),
-    memoryMap: memoryMapStatus(current, windows?.value ?? null, sample, inVm),
+    memoryMap: memoryMapStatus(
+      current,
+      windows?.value ?? null,
+      sample,
+      linuxBlock.linuxAbsent,
+      inVm,
+    ),
     gpuMap: gpuMemoryMap(gpu, current.gpu.history, Date.now()),
     others,
     prifly: report,

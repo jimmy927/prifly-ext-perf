@@ -57,6 +57,8 @@ export type MemoryMapInput = {
   compressed: number | null;
   /** Linux's read of the VM, averaged; null where there is none (WSL not running, or no WSL). */
   linux?: VmLinux | null;
+  /** Why `linux` is null, as the Machine tab says it ("WSL did not answer for 10 s; …"); "" while read. */
+  linuxAbsent?: string;
   /** What prifly's and Docker's processes hold in the VM; null until the process table is read. */
   inVm?: InVm | null;
 };
@@ -247,9 +249,11 @@ function commitView(input: MemoryMapInput, c: WindowsCounters): Tile[] {
   const pools = poolTile(c, holders, tags);
   const tiles: Tile[] = [];
   if (readable(holders)) {
-    const { linux = null, inVm = null } = input;
+    const { linux = null, inVm = null, linuxAbsent = "" } = input;
     tiles.push(
-      ...programTiles(holders).map((t) => (t.key === "wsl" ? splitWsl(t, linux, inVm) : t)),
+      ...programTiles(holders).map((t) =>
+        t.key === "wsl" ? splitWsl(t, linux, inVm, linuxAbsent) : t,
+      ),
     );
     if (holders.shared !== null) {
       tiles.push({
@@ -376,10 +380,10 @@ function inRam(tile: Tile, scale: number): Tile {
  * to what is left of RAM in use; any RAM left over after them has a tile.
  */
 function ramView(input: MemoryMapInput, c: WindowsCounters, ramTotal: number) {
-  const { linux = null, inVm = null } = input;
+  const { linux = null, inVm = null, linuxAbsent = "" } = input;
   const commit = wslCommit(input.holders);
   const system = systemTiles(c, input.compressed).map((t) =>
-    t.key === "wslram" ? splitWslRam(t, linux, inVm, commit) : t,
+    t.key === "wslram" ? splitWslRam(t, linux, inVm, commit, linuxAbsent) : t,
   );
   const budget = programBudget(c, ramTotal, system);
   const tiles = [...system];

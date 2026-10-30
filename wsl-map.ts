@@ -352,12 +352,27 @@ function scaledTo(parts: Tile[], total: number, ram?: number): Tile[] {
   return withRam(scaled(parts, total / whole));
 }
 
+/** Why the VM's tile is whole where Linux is not read and nothing said why. */
+export const NOT_READ = "Linux's memory is not read yet.";
+
+/**
+ * The VM's tile left whole, its `why` saying so and why (`absent`: why Linux
+ * is not read, such as "WSL did not answer for 10 s; …"), so that the detail
+ * says it rather than look like a tile with nothing in it to split.
+ */
+const whole = (tile: Tile, absent: string): Tile => ({
+  ...tile,
+  why: `${tile.why} It is not split by what Linux holds: ${absent || NOT_READ}`,
+});
+
 /**
  * The promised view's WSL VM tile (its value the VM's commit, its `ram` the
- * VM's working set) split by `wslParts`; the tile as it was without a Linux read.
+ * VM's working set) split by `wslParts`; without a Linux read, the tile whole
+ * with why in its `why` (`absent`, why Linux is not read).
  */
-export function splitWsl(tile: Tile, linux: VmLinux | null, inVm: InVm | null): Tile {
-  if (linux === null || tile.children !== undefined) return tile;
+export function splitWsl(tile: Tile, linux: VmLinux | null, inVm: InVm | null, absent = ""): Tile {
+  if (tile.children !== undefined) return tile;
+  if (linux === null) return whole(tile, absent);
   const children = scaledTo(wslParts(linux, inVm, tile.value), tile.value, tile.ram);
   if (children.length === 0) return tile;
   const share = tile.ram === undefined ? 1 : Math.min(1, tile.ram / tile.value);
@@ -375,15 +390,16 @@ const ramKeys = (tiles: Tile[]): Tile[] =>
 /**
  * The RAM view's WSL VM tile (its value the VM's working set) split the same
  * way, with the VM's `commit` where the process list gave it, scaled to the
- * working set; the tile as it was without a Linux read.
+ * working set; without a Linux read, the tile whole with why (`absent`).
  */
 export function splitWslRam(
   tile: Tile,
   linux: VmLinux | null,
   inVm: InVm | null,
   commit: number | null,
+  absent = "",
 ): Tile {
-  if (linux === null) return tile;
+  if (linux === null) return whole(tile, absent);
   const children = ramKeys(scaledTo(wslParts(linux, inVm, commit), tile.value));
   return children.length === 0 ? tile : { ...tile, why: RAM_WHY, children };
 }
