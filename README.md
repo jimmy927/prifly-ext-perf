@@ -558,11 +558,13 @@ prifly tab says why, and the table and containers kept so far are dropped.
 The host's own Windows processes — the host, and everything under it by parent
 pid: dictation's and the intent model's workers, the WebView2 window, its own
 short `claude` calls — come from the shared PowerShell (`Win32_Process`, every
-10 s while the window is open, the first read at once when it opens; the same
+10 s while the window is open, the first read at once when it opens and the
+second 2 s on; the same
 list, with each process's commit, as the one **Who holds Windows' memory** reads
 every 10 s). Their CPU and I/O are counters over the real time between two
-reads, so for a period under 10 s they are the last 10 s's average, and they
-read 0 until the second read, 10 s after the window opens. They count in the prifly tab as the host's, its
+reads, so for a period under 10 s they are the average since the last read,
+at least 2 s and at most 10 s, and they read 0 only until the second read.
+They count in the prifly tab as the host's, its
 dictation's and its intent model's, as on Linux, and the page's status has
 them apart as `priflyWindows`. Their read and write are all I/O, as Windows
 counts it, not disk alone. A process whose parent pid is the host's but that

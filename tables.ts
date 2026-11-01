@@ -35,6 +35,8 @@ const PSS_EVERY = 10_000;
  * rates are counters over the real time between two reads (`averageProcs`).
  */
 const WINDOWS_HOST_EVERY = 10_000;
+/** After the first read of an open window, the second comes this soon: it gives the rates their two ends. */
+const WINDOWS_HOST_SECOND = 2_000;
 
 export type TableDeps = {
   /** What reads the WSL VM on a host on Windows itself; null where this host's `/proc` is Linux. */
@@ -70,6 +72,8 @@ export class Tables {
   private dockerAt = 0;
   private procsReading = false;
   private windowsHostAt = 0;
+  /** How long after `windowsHostAt` the next read is due. */
+  private windowsHostWait = 0;
   private windowsHostReading = false;
   private stopped = false;
 
@@ -150,8 +154,9 @@ export class Tables {
     this.procs.length = 0;
     this.containers.length = 0;
     this.windowsHost.length = 0;
-    // The window opens again (or the gap ended): the host's processes are read at once, not 10 s on.
+    // The window opens again (or the gap ended): the host's processes are read at once, and again 2 s on.
     this.windowsHostAt = 0;
+    this.windowsHostWait = 0;
     this.clearPss();
   }
 
@@ -211,10 +216,12 @@ export class Tables {
       });
   }
 
-  /** The host and every process under it, from Windows' process list, every 10 s. */
+  /** The host and every process under it, from Windows' process list: every 10 s, the second read 2 s after the first. */
   private readWindowsHost(seconds: number, now: number): void {
-    if (this.windowsHostReading || now - this.windowsHostAt < WINDOWS_HOST_EVERY) return;
+    if (this.windowsHostReading || now - this.windowsHostAt < this.windowsHostWait) return;
     this.windowsHostAt = now;
+    // With nothing kept yet there is no rate: the next read comes soon, then every 10 s.
+    this.windowsHostWait = this.windowsHost.length === 0 ? WINDOWS_HOST_SECOND : WINDOWS_HOST_EVERY;
     this.windowsHostReading = true;
     (this.deps.windowsList ?? windowsProcessList)()
       .then((out) => {

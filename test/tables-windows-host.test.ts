@@ -45,36 +45,45 @@ function tables() {
 afterEach(() => setSystemTime());
 
 describe("the host's Windows processes are read every 10 s", () => {
-  test("a read on the tick the window opens, none for 10 s, then one", async () => {
+  test("a read on the tick the window opens, a second 2 s on, then none for 10 s", async () => {
     const { reads, calls, tick } = tables();
     await tick(0);
     expect(calls).toEqual([START]);
     // The prifly tab has the host at once.
     expect(reads.windowsHost).toHaveLength(1);
-    for (let s = 1; s < 10; s++) await tick(s);
-    expect(calls).toEqual([START]);
-    await tick(10);
-    expect(calls).toEqual([START, START + 10_000]);
-    for (let s = 11; s < 20; s++) await tick(s);
-    expect(calls).toHaveLength(2);
-    await tick(20);
-    expect(calls).toHaveLength(3);
-  });
-
-  test("shut and opened again within 10 s: read at once", async () => {
-    const { reads, calls, tick } = tables();
-    await tick(0);
     await tick(1);
     expect(calls).toHaveLength(1);
+    await tick(2);
+    expect(calls).toEqual([START, START + 2_000]);
+    for (let s = 3; s < 12; s++) await tick(s);
+    expect(calls).toHaveLength(2);
+    await tick(12);
+    expect(calls).toEqual([START, START + 2_000, START + 12_000]);
+    for (let s = 13; s < 22; s++) await tick(s);
+    expect(calls).toHaveLength(3);
+    await tick(22);
+    expect(calls).toHaveLength(4);
+  });
+
+  test("shut and opened again within 10 s: the same again, a read at once and one 2 s on", async () => {
+    const { reads, calls, tick } = tables();
+    await tick(0);
+    await tick(2);
+    await tick(3);
+    expect(calls).toHaveLength(2);
     // The panel finds the window shut and opens it: it clears what was kept (`panel` in `index.ts`).
     reads.clear();
-    await tick(3);
-    expect(calls).toEqual([START, START + 3_000]);
+    await tick(4);
+    expect(calls).toEqual([START, START + 2_000, START + 4_000]);
     expect(reads.windowsHost).toHaveLength(1);
-    await tick(12);
-    expect(calls).toHaveLength(2);
-    await tick(13);
+    await tick(5);
     expect(calls).toHaveLength(3);
+    await tick(6);
+    expect(calls).toHaveLength(4);
+    for (let s = 7; s < 16; s++) await tick(s);
+    expect(calls).toHaveLength(4);
+    await tick(16);
+    expect(calls).toHaveLength(5);
   });
 
   test("a read still in flight is not asked again", async () => {
@@ -105,18 +114,22 @@ describe("the host's rates are over the real time between reads", () => {
     await tick(0, 100);
     // One read has no two ends: no rate yet, as before.
     expect(averageProcs(reads.windowsHost, 2)?.value[0]?.cpu).toBe(0);
-    // Half a core for 10 s.
-    await tick(10, 105);
+    // The second read, 2 s on, gives it: half a core.
+    await tick(2, 101);
+    expect(averageProcs(reads.windowsHost, 2)?.value[0]?.cpu).toBeCloseTo(0.5, 5);
+    // Half a core for the next 10 s.
+    await tick(12, 106);
     for (const period of [1, 2, 5, 10, 30]) {
       const host = averageProcs(reads.windowsHost, period);
-      expect(host?.covered).toBe(10);
+      // A period of 30 s reaches back to the first read, 12 s.
+      expect(host?.covered).toBe(period === 30 ? 12 : 10);
       expect(host?.value[0]?.cpu).toBeCloseTo(0.5, 5);
     }
   });
 
   test("the samples are kept long enough for a 5 min period", async () => {
     const { reads, tick } = tables();
-    for (let s = 0; s <= 300; s += 10) await tick(s, s / 2);
+    for (let s = 0; s <= 302; s++) await tick(s, s / 2);
     const host = averageProcs(reads.windowsHost, 300);
     expect(host?.covered).toBe(300);
     expect(host?.value[0]?.cpu).toBeCloseTo(0.5, 5);
