@@ -106,12 +106,25 @@ const counted = (name: string, count: number) => (count > 1 ? `${name} ×${count
 
 const sum = (tiles: readonly { value: number }[]) => tiles.reduce((s, t) => s + t.value, 0);
 
+/**
+ * The Claude group's name: its sessions (the `claude` processes) with the
+ * processes under them beside: "Claude sessions 18 · 70 processes". Their
+ * memory is the sessions' all the same.
+ */
+function sessionsNamed(name: string, groups: Holder[]): string {
+  const all = groups.flatMap((g) => g.processes);
+  const sessions = all.filter((p) => p.session === true).length;
+  if (sessions === 0) return counted(name, all.length);
+  if (all.length === sessions) return `${name} ${sessions}`;
+  return `${name} ${sessions} · ${all.length} processes`;
+}
+
 /** Several holder groups as one tile: their commit as its value, their working set as `ram`. */
 function leaf(key: string, name: string, colour: string, why: string, groups: Holder[]): Tile {
   const count = groups.reduce((n, g) => n + g.processes.length, 0);
   return {
     key,
-    name: counted(name, count),
+    name: key === "claude" ? sessionsNamed(name, groups) : counted(name, count),
     colour,
     value: groups.reduce((s, g) => s + g.commit, 0),
     ram: groups.reduce((s, g) => s + g.ram, 0),
