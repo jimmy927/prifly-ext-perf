@@ -29,8 +29,12 @@ const DOCKER_EVERY = 10_000;
 const WSL_TIMEOUT = 10_000;
 /** The `claude` processes' PSS walks their page tables: at most this often. */
 const PSS_EVERY = 10_000;
-/** The host's own Windows processes: a slower query than a counter, so every 2 s. */
-const WINDOWS_HOST_EVERY = 2_000;
+/**
+ * The host's own Windows processes: a CIM and process query that costs the
+ * shared PowerShell and WMI a share of a core per call, so every 10 s. The
+ * rates are counters over the real time between two reads (`averageProcs`).
+ */
+const WINDOWS_HOST_EVERY = 10_000;
 
 export type TableDeps = {
   /** What reads the WSL VM on a host on Windows itself; null where this host's `/proc` is Linux. */
@@ -39,6 +43,8 @@ export type TableDeps = {
   windows: boolean;
   /** This host's pid: a Windows pid on a host on Windows itself. */
   hostPid: number;
+  /** What lists the Windows processes; `windowsProcessList` unless a test gives its own. */
+  windowsList?: () => Promise<string>;
   log: (event: string, data: { error: string }) => void;
 };
 
@@ -144,6 +150,8 @@ export class Tables {
     this.procs.length = 0;
     this.containers.length = 0;
     this.windowsHost.length = 0;
+    // The window opens again (or the gap ended): the host's processes are read at once, not 10 s on.
+    this.windowsHostAt = 0;
     this.clearPss();
   }
 
@@ -203,12 +211,12 @@ export class Tables {
       });
   }
 
-  /** The host and every process under it, from Windows' process list, every 2 s. */
+  /** The host and every process under it, from Windows' process list, every 10 s. */
   private readWindowsHost(seconds: number, now: number): void {
     if (this.windowsHostReading || now - this.windowsHostAt < WINDOWS_HOST_EVERY) return;
     this.windowsHostAt = now;
     this.windowsHostReading = true;
-    windowsProcessList()
+    (this.deps.windowsList ?? windowsProcessList)()
       .then((out) => {
         if (!this.stopped) {
           keep(this.windowsHost, hostTreeOf(out, this.deps.hostPid, Date.now()), seconds);
