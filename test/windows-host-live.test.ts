@@ -56,6 +56,7 @@ function live(answer: (pids: number[]) => string = () => "") {
   const asked: { at: number; pids: number[] }[] = [];
   const logged: string[] = [];
   const reader = new WindowsHostLive(
+    HOST_PID,
     (event, data) => logged.push(`${event}: ${data.error}`),
     async (script) => {
       const pids = pidsOf(script);
@@ -134,6 +135,10 @@ describe("one read a second, of the newest tree's pids", () => {
     expect(reads).toHaveLength(3);
   });
 
+  test("the fallback's process whose times throw is a row of its own, not the end of the answer", () => {
+    expect(liveRead([1])).toContain("catch { [string]$p.Id + '|||0' }");
+  });
+
   test("asked twice in the same second, it reads once", async () => {
     const { reader, asked } = live();
     const trees = [treeAt(0, [reading(HOST_PID, 0)])];
@@ -147,6 +152,7 @@ describe("one read a second, of the newest tree's pids", () => {
     let release: (out: string) => void = () => {};
     let calls = 0;
     const reader = new WindowsHostLive(
+      HOST_PID,
       () => {},
       () => {
         calls += 1;
@@ -171,6 +177,7 @@ describe("one read a second, of the newest tree's pids", () => {
     let release: (out: string) => void = () => {};
     let calls = 0;
     const reader = new WindowsHostLive(
+      HOST_PID,
       () => {},
       () => {
         calls += 1;
@@ -242,7 +249,9 @@ describe("the prifly tab's numbers", () => {
       expect(host?.cpu).toBeCloseTo(0.5, 5);
     }
   });
+});
 
+describe("processes that change, come, go, or cannot be read", () => {
   test("CPU that changes shows the next second, not 10 s on", async () => {
     let cpu = 0;
     const { reader } = live((pids) => pids.map((pid) => line(pid, cpu)).join("\n"));
@@ -301,9 +310,36 @@ describe("the prifly tab's numbers", () => {
     // The next tree has the new process under the host: its rate starts afresh, from its own reads.
     keep(trees, treeAt(3.5, [reading(HOST_PID, 0), reading(CHILD, 900)]), 310);
     await tickAt(reader, trees, 4);
+    // Read once as the new process: the trees' rate would be 900 s of CPU spanning two processes.
+    const once = averageHost(trees, reader.ring, 5)?.find((proc) => proc.pid === CHILD);
+    expect(once?.cpu).toBe(0);
     await tickAt(reader, trees, 5);
     const child = averageHost(trees, reader.ring, 5)?.find((proc) => proc.pid === CHILD);
     expect(child?.cpu).toBe(0);
+  });
+
+  test("an empty answer, or one without the host, is a failed read: every process stands", async () => {
+    for (const answer of [
+      () => "",
+      (pids: number[]) =>
+        pids
+          .filter((pid) => pid !== HOST_PID)
+          .map((pid) => line(pid, 1))
+          .join("\n"),
+    ]) {
+      const { reader, logged } = live(answer);
+      const trees = [treeAt(0, [reading(HOST_PID, 0), reading(CHILD, 0)])];
+      await tickAt(reader, trees, 1);
+      await tickAt(reader, trees, 2);
+      expect(reader.ring).toHaveLength(0);
+      expect(logged).toHaveLength(2);
+      expect(logged[0]).toStartWith("windows_host_live_failed: Error: no row for the host (9000)");
+      expect(
+        averageHost(trees, reader.ring, 1)
+          ?.map((proc) => proc.pid)
+          .sort(),
+      ).toEqual([HOST_PID, CHILD]);
+    }
   });
 
   test("a process whose times are not ours to read stands as the tree has it", async () => {

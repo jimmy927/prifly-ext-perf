@@ -10,6 +10,7 @@ import { afterEach, describe, expect, mock, setSystemTime, test } from "bun:test
 import { averageProcs } from "../average";
 import type { State } from "../state";
 import { Tables } from "../tables";
+import { averageHost } from "../windows-host-live";
 import * as realTop from "../windows-top";
 import type { WslLinux } from "../wsl-exe";
 
@@ -37,6 +38,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** A host on Windows itself with WSL gone, so only the Windows lists are read; `lists` counts the early reads. */
 function host(listFails = false) {
   const lists: number[] = [];
+  /** When the per-second read was asked. */
+  const lives: number[] = [];
   const logged: string[] = [];
   let cpuSeconds = 0;
   const wsl = { absent: "WSL is not running" } as unknown as WslLinux;
@@ -49,8 +52,11 @@ function host(listFails = false) {
       if (listFails) throw new Error("no list");
       return listing(cpuSeconds);
     },
-    // The per-second read (`windows-host-live.test.ts`): nothing running, so the tree stands.
-    windowsLive: async () => "",
+    // The per-second read (`windows-host-live.test.ts`): the host running, its CPU as the listing has it.
+    windowsLive: async () => {
+      lives.push(Date.now());
+      return `${HOST_PID}|1|${cpuSeconds * 10_000_000}|300000000`;
+    },
     log: (event) => logged.push(event),
   });
   const state = {
@@ -84,14 +90,14 @@ function host(listFails = false) {
     opened(state);
     await settle();
   };
-  return { tables, lists, logged, tick, open };
+  return { tables, lists, lives, logged, tick, open };
 }
 
 afterEach(() => setSystemTime());
 
 describe("the host's Windows processes come from the listing of the Memory tab", () => {
   test("open: the tree is filled by the first answer, the second reading comes early, then one listing per 10 s", async () => {
-    const { tables, lists, open, tick } = host();
+    const { tables, lists, lives, open, tick } = host();
     await open(0);
     expect(top.calls).toEqual([START]);
     expect(tables.windowsHost).toHaveLength(1);
@@ -101,6 +107,12 @@ describe("the host's Windows processes come from the listing of the Memory tab",
     await tick(1);
     expect(lists).toEqual([START + 1_000]);
     expect(tables.windowsHost).toHaveLength(2);
+    // The per-second read has run, kept a reading, and the tree's processes are still there.
+    expect(lives.length).toBeGreaterThan(0);
+    expect(tables.windowsHostLive.ring.length).toBeGreaterThan(0);
+    expect(
+      averageHost(tables.windowsHost, tables.windowsHostLive.ring, 1)?.map((p) => p.pid),
+    ).toEqual([HOST_PID]);
     // Then nothing but the listing, every 10 s.
     for (let s = 2; s <= 10; s++) await tick(s);
     expect(top.calls).toEqual([START]);

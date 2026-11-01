@@ -83,7 +83,7 @@ export class Tables {
 
   constructor(deps: TableDeps) {
     this.deps = deps;
-    this.windowsHostLive = new WindowsHostLive(deps.log, deps.windowsLive);
+    this.windowsHostLive = new WindowsHostLive(deps.hostPid, deps.log, deps.windowsLive);
   }
 
   /** Whether this host's own Windows processes are read: only on a host on Windows itself. */

@@ -82,10 +82,11 @@ export function liveRead(pids: readonly number[]): string {
     `try { Add-Type -TypeDefinition '${HELPER}' } catch { 'liveerr|' + ($_.Exception.Message -replace '[\\r\\n]+', ' ') } }; ` +
     `if ('PriflyHostLive' -as [type]) { [PriflyHostLive]::Read(${list}) } else { ` +
     `$ids = @{}; foreach ($i in ${list}) { $ids[$i] = 1 }; ` +
-    "foreach ($p in [Diagnostics.Process]::GetProcesses()) { if ($ids.ContainsKey($p.Id)) { " +
+    // One process whose times throw (a protected one) must not cut the answer short.
+    "foreach ($p in [Diagnostics.Process]::GetProcesses()) { if ($ids.ContainsKey($p.Id)) { try { " +
     "[string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}|{1}|{2}|{3}', $p.Id, " +
     "$(if ($p.StartTime) { ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() } else { '' }), " +
-    "$(if ($p.StartTime) { $p.TotalProcessorTime.Ticks } else { '' }), $p.WorkingSet64) } } }"
+    "$(if ($p.StartTime) { $p.TotalProcessorTime.Ticks } else { '' }), $p.WorkingSet64) } catch { [string]$p.Id + '|||0' } } } }"
   );
 }
 
@@ -114,9 +115,15 @@ export function parseLiveRead(out: string): Map<number, LiveRow> {
  * running, made from the tree's row (ppid, name, command line, I/O) with the
  * time and working set of now. `answered` is the pids whose fate it knows:
  * read, ended, or someone else's since (a reused pid); one whose times it
- * could not read is not in it. `tree` is when that tree was read.
+ * could not read is not in it. `tree` is when that tree was read. `reborn`
+ * is the pids found to be another process than at the reads before
+ * (`WindowsHostLive.forgetReused`): the tree's rate for them is two processes'.
  */
-export type LiveSnapshot = ProcSnapshot & { tree: number; answered: ReadonlySet<number> };
+export type LiveSnapshot = ProcSnapshot & {
+  tree: number;
+  answered: ReadonlySet<number>;
+  reborn: Set<number>;
+};
 
 /**
  * The live snapshot of `rows`, read at `at` for the pids of `tree`. A process
@@ -137,7 +144,7 @@ export function liveSnapshotOf(
     if (row === undefined || row.ticks === null || (row.started ?? 0) > tree.at) continue;
     procs.set(pid, { ...reading, ticks: row.ticks, rss: row.rss });
   }
-  return { at, procs, tree: tree.at, answered };
+  return { at, procs, tree: tree.at, answered, reborn: new Set() };
 }
 
 /**
@@ -151,6 +158,8 @@ export class WindowsHostLive {
   private readonly started = new Map<number, number>();
   private readonly run: (script: string, timeout: number) => Promise<string>;
   private readonly log: (event: string, data: { error: string }) => void;
+  /** The host's own pid, the tree's root: running while it reads, so an answer without it failed. */
+  private readonly hostPid: number;
   private at = 0;
   private reading = false;
   /** Counts `clear` calls: a read that lands after one is dropped. */
@@ -158,9 +167,11 @@ export class WindowsHostLive {
   private stopped = false;
 
   constructor(
+    hostPid: number,
     log: (event: string, data: { error: string }) => void,
     run: (script: string, timeout: number) => Promise<string> = powershell,
   ) {
+    this.hostPid = hostPid;
     this.log = log;
     this.run = run;
   }
@@ -179,6 +190,10 @@ export class WindowsHostLive {
         if (helper !== undefined) this.log("windows_host_live_helper_failed", { error: helper });
         if (this.stopped || generation !== this.generation) return;
         const rows = parseLiveRead(out);
+        // Empty or cut short (the script threw): not every process ended, so the trees stand.
+        if (!rows.has(this.hostPid)) {
+          throw new Error(`no row for the host (${this.hostPid}): ${out.slice(0, 200)}`);
+        }
         const snapshot = liveSnapshotOf(tree, rows, Date.now());
         this.forgetReused(rows, snapshot);
         keep(this.ring, snapshot, seconds);
@@ -212,6 +227,7 @@ export class WindowsHostLive {
       const before = this.started.get(pid);
       if (before !== undefined && before !== started) {
         for (const old of this.ring) old.procs.delete(pid);
+        snapshot.reborn.add(pid);
       }
       this.started.set(pid, started);
     }
@@ -238,20 +254,29 @@ export function averageHost(
   if (full === null || tree === undefined) return null;
   const end = live.at(-1);
   if (end === undefined || end.at < tree.at - LIVE_STALE) return full.value;
-  const before = live.at(-2);
   const fast = new Map((averageProcs(live, seconds)?.value ?? []).map((proc) => [proc.pid, proc]));
   const value: Proc[] = [];
   for (const proc of full.value) {
-    const now = fast.get(proc.pid);
-    if (now === undefined) {
-      // Asked after the tree was read, and not running: it ended since.
-      if (!(end.at > tree.at && end.answered.has(proc.pid))) value.push(proc);
-    } else if (before?.procs.has(proc.pid)) {
-      value.push({ ...proc, rss: now.rss, cpu: now.cpu });
-    } else {
-      // Read once so far: no rate of its own yet, so the tree's.
-      value.push({ ...proc, rss: now.rss });
-    }
+    const merged = mergedProc(proc, fast.get(proc.pid), live, tree);
+    if (merged !== null) value.push(merged);
   }
   return value;
+}
+
+/** One process of `averageHost`: `proc` as the trees have it, `now` as the per-second reads do; null for one that ended. */
+function mergedProc(
+  proc: Proc,
+  now: Proc | undefined,
+  live: readonly LiveSnapshot[],
+  tree: ProcSnapshot,
+): Proc | null {
+  const end = live.at(-1);
+  if (end === undefined) return proc;
+  if (now === undefined) {
+    // Asked after the tree was read, and not running: it ended since.
+    return end.at > tree.at && end.answered.has(proc.pid) ? null : proc;
+  }
+  if (live.at(-2)?.procs.has(proc.pid)) return { ...proc, rss: now.rss, cpu: now.cpu };
+  // Read once so far: no rate of its own yet, so the tree's; none for a reused pid, whose tree rate spans two processes.
+  return { ...proc, rss: now.rss, cpu: end.reborn.has(proc.pid) ? 0 : proc.cpu };
 }
