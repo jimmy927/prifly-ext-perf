@@ -39,6 +39,7 @@ const group = (
   ram: number,
   count = 1,
   sessions = 0,
+  runs = 0,
 ): Holder => ({
   key,
   name,
@@ -50,6 +51,7 @@ const group = (
     commit: GB(commit) / count,
     ram: GB(ram) / count,
     ...(i < sessions ? { session: true } : {}),
+    ...(i < runs ? { run: true } : {}),
   })),
 });
 
@@ -121,6 +123,37 @@ describe("the promised view", () => {
     ]);
     expect(find(map.commit, "wsl")?.ram).toBe(GB(10));
     expect(find(map.commit, "chrome")?.name).toBe("Chrome ×26");
+  });
+
+  test("test runs have a tile of their own, and other bun holds none of them", () => {
+    const groups = [
+      ...GROUPS,
+      group("tests", "Test runs", 8, 4, 28, 0, 4),
+      group("p:bun", "bun", 0.5, 0.25, 2),
+    ];
+    const prifly = find(mapOf({ holders: holdersOf(groups) }).commit, "prifly");
+    const names = prifly?.children?.map((c) => c.name);
+    expect(names).toEqual([
+      "Dictation worker ×2",
+      "Claude sessions 3 · 8 processes",
+      "Host and helpers",
+      "Window (WebView2) ×3",
+      "Test runs 4 · 28 processes",
+      "Other bun ×2",
+    ]);
+    expect(find(prifly?.children ?? [], "tests")).toMatchObject({ value: GB(8), ram: GB(4) });
+    expect(find(prifly?.children ?? [], "bun")?.value).toBe(GB(0.5));
+    // A tile of workers alone, or of no run at all, says what it can.
+    const alone = [...GROUPS, group("tests", "Test runs", 1, 1, 3, 0, 3)];
+    expect(
+      find(find(mapOf({ holders: holdersOf(alone) }).commit, "prifly")?.children ?? [], "tests")
+        ?.name,
+    ).toBe("Test runs 3");
+    const bare = [...GROUPS, group("tests", "Test runs", 1, 1, 3)];
+    expect(
+      find(find(mapOf({ holders: holdersOf(bare) }).commit, "prifly")?.children ?? [], "tests")
+        ?.name,
+    ).toBe("Test runs ×3");
   });
 
   test("the compression store's process is no program", () => {
