@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { firstPace } from "../cadence";
 import { GpuMonitor } from "../gpu-live";
 import { holdersOf } from "../holders";
 import { status } from "../index";
@@ -130,6 +131,8 @@ function nativeState(shell: FakeSh, readTimeout: number) {
   const state: State = {
     api,
     linux,
+    linuxAt: now,
+    pace: firstPace(),
     wsl,
     tables: new Tables({ wsl, windows: true, hostPid: HOST_PID, log: () => {} }),
     windows,

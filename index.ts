@@ -5,8 +5,11 @@
  * second tab is prifly itself: how many processes it runs, for which
  * sessions, how many MCP servers they started, and what each costs.
  *
- * Linux is read every second, always: a few small files, for the chip.
- * Windows' counters come from one `typeperf` at a time, always running. The process
+ * Linux is read every second whatever the window: a few small files, for the
+ * chip. Windows' counters come from one `typeperf` at a time, always running.
+ * Both slow to every 5 s once nobody has looked and WSL has been green for a
+ * minute, and are read every second again the moment either changes
+ * (`cadence.ts`). The process
  * table, Docker's containers, Windows' busiest processes and the cloud
  * sessions are read only while the window is open, since nothing else shows them — except that the
  * process table is also read every 5 s whenever WSL's CPU or memory is not
@@ -23,6 +26,7 @@
  */
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
+import { due, firstPace, hurry, pace, readLinuxNow } from "./cadence";
 import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
 import { gpuMemoryMap } from "./gpu-map";
@@ -63,7 +67,7 @@ import {
 import { compressionGrowth, parsePoolTags, poolTags } from "./windows-memory";
 import { WindowsSampler } from "./windows-sampler";
 import { topProcesses } from "./windows-top";
-import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
+import type { LinuxRaw, LinuxSample } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
 import { type InVm, inVmOf } from "./wsl-map";
 
@@ -226,16 +230,14 @@ function refreshWhileOpen(current: State): void {
   }
 }
 
-function tick(current: State): void {
-  if (current.wsl === null) keep(current.linux, readLinux(), HOUR);
-  else {
-    // Its answer lands in the ring a moment later (`activate`).
-    current.wsl.poll();
-    // No WSL now: what was kept is from before the gap, and says nothing about now.
-    if (current.wsl.absent !== "") {
-      current.linux.length = 0;
-      current.tables.clearWsl();
-    }
+/** One second: Linux read when due, and the chip, the nanny and the pace from the last 10 s. Exported for the tests. */
+export function tick(current: State, now = Date.now()): void {
+  if (open(current)) hurry(current, now);
+  if (due(current.linuxAt, current.pace.every, now)) readLinuxNow(current, now);
+  // No WSL now: what was kept is from before the gap, and says nothing about now.
+  if (current.wsl !== null && current.wsl.absent !== "") {
+    current.linux.length = 0;
+    current.tables.clearWsl();
   }
   if (open(current)) refreshWhileOpen(current);
   const linux = averageLinux(current.linux, CHIP_WINDOW);
@@ -244,10 +246,17 @@ function tick(current: State): void {
     if (current.wsl !== null && windowsAverage(current, CHIP_WINDOW) !== null) {
       showAll(current, null, {});
     }
+    // No WSL to judge: only the chip reads Windows while nobody looks.
+    pace(current, true, now);
     return;
   }
   const verdicts = linuxVerdicts(linux.value);
   showAll(current, verdicts, nannyStep(current, linux.value, verdicts));
+  pace(
+    current,
+    Object.values(verdicts).every((verdict) => verdict === "good"),
+    now,
+  );
 }
 
 async function learnWindows(current: State): Promise<void> {
@@ -272,6 +281,8 @@ export function activate(api: ExtensionApi): () => void {
   const current: State = {
     api,
     linux,
+    linuxAt: 0,
+    pace: firstPace(),
     wsl,
     tables: new Tables({
       wsl,
@@ -520,6 +531,7 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   current.askedWindow = seconds;
   // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
+    hurry(current, current.askedAt);
     current.tables.clear();
     // The store's growth is read only while open: a minute from before the gap says nothing now.
     current.compressions.length = 0;

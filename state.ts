@@ -3,6 +3,7 @@
  * window counts as open.
  */
 
+import type { Pace } from "./cadence";
 import type { GpuMonitor } from "./gpu-live";
 import type { Holders } from "./holders";
 import type { NannyMemory } from "./nanny";
@@ -18,8 +19,15 @@ import type { WslLinux } from "./wsl-exe";
 
 export type State = {
   api: ExtensionApi;
-  /** The last hour of reads, one a second; empty while a host on Windows has no WSL to read. */
+  /**
+   * The last hour of reads, one a second, or one every 5 s while nobody looks
+   * and WSL is green (`cadence.ts`); empty while a host on Windows has no WSL to read.
+   */
   linux: LinuxRaw[];
+  /** When Linux was last asked for. */
+  linuxAt: number;
+  /** How often Linux and Windows are read now (`cadence.ts`). */
+  pace: Pace;
   /** On a host on Windows itself, what reads the WSL VM; null where Linux is this host's `/proc`. */
   wsl: WslLinux | null;
   /**

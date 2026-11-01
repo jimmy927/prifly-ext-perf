@@ -1,6 +1,7 @@
 /**
  * The one `typeperf.exe` at a time that prints Windows' counters (`windows.ts`)
- * every second, and the last hour of what it printed.
+ * every second, or every 5 s while nobody looks (`cadence.ts`), and the last
+ * hour of what it printed.
  */
 
 import { spawn } from "node:child_process";
@@ -53,10 +54,19 @@ const realDeps: SamplerDeps = {
 export const RUN_SECONDS = 50;
 
 /**
- * Samples before the end at which the next `typeperf` is started. One takes
- * about two seconds to print its header and a third to print a line, so
- * starting it this early has it ready when the last one ends and the
- * one-a-second series has no gap.
+ * How long one runs at a slower pace than a sample a second (`setEvery`).
+ * Each start costs about 0.65 s of CPU (measured 2026-11-01), which over a
+ * 50 s run at a sample every 5 s is as much as all its samples; an orphan
+ * then lives this long at most.
+ */
+export const SLOW_RUN_SECONDS = 300;
+
+/**
+ * Samples before the end at which the next `typeperf` is started, at a
+ * sample a second. One takes about two seconds to print its header and a
+ * third to print a line, so starting it this early has it ready when the last
+ * one ends and the one-a-second series has no gap. At a slower pace it is
+ * started as many seconds ahead, or one sample where that is longer.
  */
 export const HANDOVER_SAMPLES = 5;
 
@@ -68,7 +78,8 @@ type Run = { child: TypeperfChild; header: string; samples: number };
 /**
  * Keeps one `typeperf` running at a time and the last hour of the lines it
  * printed (the panel averages over them). Each ends by itself after
- * `RUN_SECONDS` and the next, started a few samples before, takes over; that
+ * `RUN_SECONDS` (`SLOW_RUN_SECONDS` at a slower pace than a sample a second)
+ * and the next, started a few seconds before, takes over; that
  * is not a failure. One that ends early, or without printing its samples, is:
  * the error says so and it is started again in 30 s.
  *
@@ -91,14 +102,43 @@ export class WindowsSampler {
   private unhook: (() => void) | null = null;
   private stopped = false;
 
-  private readonly everySeconds: number;
-  private readonly runSamples: number;
+  private everySeconds = 0;
+  private runSamples = 0;
+  private handover = 0;
   private readonly deps: SamplerDeps;
 
   constructor(everySeconds: number, deps: SamplerDeps = realDeps) {
-    this.everySeconds = everySeconds;
-    this.runSamples = Math.max(HANDOVER_SAMPLES + 1, Math.round(RUN_SECONDS / everySeconds));
     this.deps = deps;
+    this.pace(everySeconds);
+  }
+
+  /** Seconds between samples now. */
+  get every(): number {
+    return this.everySeconds;
+  }
+
+  /**
+   * A sample every `seconds` from now on. What runs is ended and one at the
+   * new pace started at once: its first line comes one sample and about two
+   * seconds later, and the history in between keeps what it had.
+   */
+  setEvery(seconds: number): void {
+    if (seconds === this.everySeconds) return;
+    this.pace(seconds);
+    // Not started, stopped, or waiting to start again: that start takes the new pace.
+    if (this.unhook === null || this.cancelRetry !== null) return;
+    const runs = [this.current, this.next];
+    this.current = null;
+    this.next = null;
+    for (const run of runs) run?.child.kill();
+    this.launch();
+  }
+
+  private pace(seconds: number): void {
+    this.everySeconds = seconds;
+    this.handover = Math.max(1, Math.ceil(HANDOVER_SAMPLES / seconds));
+    const run = seconds > 1 ? SLOW_RUN_SECONDS : RUN_SECONDS;
+    this.runSamples = Math.max(this.handover + 1, Math.round(run / seconds));
   }
 
   start(): void {
@@ -148,7 +188,7 @@ export class WindowsSampler {
     if (run.header === "") return;
     // The lines after the samples ("Exiting, please wait...") do not start with a quote.
     if (line.startsWith('"')) run.samples++;
-    if (run === this.current && run.samples === this.runSamples - HANDOVER_SAMPLES) {
+    if (run === this.current && run.samples === this.runSamples - this.handover) {
       if (this.next === null && !this.stopped) this.launch();
     }
     // The next one's lines are the same seconds as the current one's: dropped until it takes over.

@@ -36,9 +36,18 @@ the last 8 s*).
   Windows' counters are the mean of the one-second samples in the window.
 - **Colours and the headline** are judged from the averaged numbers.
 - **Sparklines** have one point per window: the last 60 that fit in the last
-  hour.
+  hour. Stretches while the window was closed were read every 5 s (below), so
+  a short period's points there repeat.
 - The status-bar colour always judges the last 10 s, with the window open or not.
-  The busiest Windows processes are read every 10 s whatever the window.
+  The busiest Windows processes are read only while the window is open.
+- **While nobody looks** (the window closed) and WSL has been green for a
+  minute, WSL and Windows are read every 5 s instead of every second; the
+  colour still judges the last 10 s, two reads. Opening the window, or WSL
+  turning orange or red, goes back to a read a second at once. Windows' own
+  colour does not: with the window closed only the colour reads Windows, its
+  rates are `typeperf`'s own averages over the 5 s, and it can change at most
+  once a read. Measured on a 16-core laptop, this takes the extension's
+  `typeperf.exe` from about 2.9 % of a core to about 0.6 %.
 
 ## Machine
 
@@ -467,13 +476,13 @@ you are.
 ## Where the numbers come from
 
 - **WSL**: `/proc/pressure/{cpu,memory,io}`, `/proc/stat`, `/proc/meminfo`,
-  `/proc/vmstat` and `/proc/loadavg`, every second, the last hour kept. This is the WSL VM's single
+  `/proc/vmstat` and `/proc/loadavg`, every second (every 5 s while nobody looks, above), the last hour kept. This is the WSL VM's single
   kernel, so Docker Desktop's containers count in these totals. They run in a
   distro of their own, though, so they never appear in the process list; their
   cgroups (`cpu.stat`, `memory.current`, `memory.stat`) are read with the
   process list.
 - **Windows**: one `typeperf.exe` at a time, always running, that prints its counters
-  every second, the last hour kept. Each ends by itself after 50 samples and the next is started a few seconds before, so a host that dies without a word (SIGKILL) leaves none running for more than about a minute; the host's exit and SIGTERM/SIGINT end it at once. If one ends early, it is started again in 30 s. One `powershell.exe` is started on first
+  every second, the last hour kept. Each ends by itself after 50 samples and the next is started a few seconds before, so a host that dies without a word (SIGKILL) leaves none running for more than about a minute. While nobody looks it prints every 5 s and runs 5 minutes, as each start costs about 0.65 s of CPU; an orphan then runs 5 minutes at most. The host's exit and SIGTERM/SIGINT end it at once. If one ends early, it is started again in 30 s. One `powershell.exe` is started on first
   use and stays running (no console flashing up); it reads the machine's name, cores and
   memory once and answers the calls below.
 - **Processes**: `/proc/<pid>/stat`, `cmdline` and `io`, every second, only
@@ -513,7 +522,7 @@ shows Linux alone.
 A prifly host that runs natively on Windows (not inside WSL) reads Windows the
 same way, with `typeperf.exe` and `powershell.exe` from `%SystemRoot%\System32`.
 WSL's figures come from one `wsl.exe -e sh` that stays running: once a second
-it is sent the same one-line command, a `tail` of the `/proc` files above, and
+(every 5 s while nobody looks) it is sent the same one-line command, a `tail` of the `/proc` files above, and
 its output goes through the same parsers. It is started only while
 `wsl.exe --list --running` names a distro (asked once a minute while it names
 none), so the extension never boots the WSL VM; once started, though, it keeps
