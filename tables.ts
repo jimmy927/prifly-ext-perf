@@ -21,6 +21,7 @@ import { type ProcSnapshot, readProcs } from "./procs";
 import { parsePssRead, pssRead, readPss } from "./pss";
 import { keep } from "./ring";
 import { hostTreeOf, windowsProcessList } from "./windows";
+import { WindowsHostLive } from "./windows-host-live";
 import { PROCS_READ, parseProcsRead, type WslLinux } from "./wsl-exe";
 
 /** Containers' names and mounts change only when one starts or stops. */
@@ -47,6 +48,8 @@ export type TableDeps = {
   hostPid: number;
   /** What lists the Windows processes for the early second reading; `windowsProcessList` unless a test gives its own. */
   windowsList?: () => Promise<string>;
+  /** What runs the per-second read of the host's processes (`liveRead`); `powershell` unless a test gives its own. */
+  windowsLive?: (script: string, timeout: number) => Promise<string>;
   log: (event: string, data: { error: string }) => void;
 };
 
@@ -59,6 +62,8 @@ export class Tables {
   dockerInfos = new Map<string, ContainerInfo>();
   /** On a host on Windows itself, the host and all it started there; empty elsewhere. */
   readonly windowsHost: ProcSnapshot[] = [];
+  /** Their CPU and working set every second, for the pids of the newest tree (`windows-host-live.ts`). */
+  readonly windowsHostLive: WindowsHostLive;
   /**
    * The PSS of the sessions' `claude` processes, by pid (`pss.ts`), read while
    * the Memory tab is open; a pid it could not read is absent.
@@ -78,6 +83,7 @@ export class Tables {
 
   constructor(deps: TableDeps) {
     this.deps = deps;
+    this.windowsHostLive = new WindowsHostLive(deps.log, deps.windowsLive);
   }
 
   /** Whether this host's own Windows processes are read: only on a host on Windows itself. */
@@ -94,7 +100,9 @@ export class Tables {
       return;
     }
     this.readThroughWsl(wsl, seconds, true);
-    if (this.deps.windows) this.readWindowsHostEarly(seconds, now);
+    if (!this.deps.windows) return;
+    this.readWindowsHostEarly(seconds, now);
+    this.windowsHostLive.read(this.windowsHost, seconds, now);
   }
 
   /** For the nanny: the table alone, kept `seconds`. */
@@ -155,6 +163,7 @@ export class Tables {
     this.windowsHost.length = 0;
     // The window opens again (or the gap ended): the first reading is `topProcesses`', and the second follows soon.
     this.windowsHostEarly = false;
+    this.windowsHostLive.clear();
     this.clearPss();
   }
 
@@ -168,6 +177,7 @@ export class Tables {
   /** No answer that lands after this is kept. */
   stop(): void {
     this.stopped = true;
+    this.windowsHostLive.stop();
   }
 
   private keepContainers(containers: ContainerSnapshot, seconds: number, now: number): void {

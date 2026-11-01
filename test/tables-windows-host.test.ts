@@ -49,6 +49,8 @@ function host(listFails = false) {
       if (listFails) throw new Error("no list");
       return listing(cpuSeconds);
     },
+    // The per-second read (`windows-host-live.test.ts`): nothing running, so the tree stands.
+    windowsLive: async () => "",
     log: (event) => logged.push(event),
   });
   const state = {

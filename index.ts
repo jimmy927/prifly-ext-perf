@@ -64,6 +64,7 @@ import {
   windowsInfo,
   windowsTools,
 } from "./windows";
+import { averageHost } from "./windows-host-live";
 import { compressionGrowth, parsePoolTags, poolTags } from "./windows-memory";
 import { WindowsSampler } from "./windows-sampler";
 import { topProcesses } from "./windows-top";
@@ -367,7 +368,7 @@ function priflyOf(current: State, seconds: number, memoryTab: boolean) {
     ownerOf(info, sessions),
   );
   const windowsHost = tables.native
-    ? (averageProcs(tables.windowsHost, seconds)?.value ?? null)
+    ? averageHost(tables.windowsHost, tables.windowsHostLive.ring, seconds)
     : null;
   const priflyWindows: Usage | null = windowsHost === null ? null : usageOf(windowsHost);
   // What "Other" is made of in the Where it goes card; WSL's only once prifly's part is known.

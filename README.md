@@ -560,12 +560,22 @@ pid: dictation's and the intent model's workers, the WebView2 window, its own
 short `claude` calls — come from the same listing as **Who holds Windows'
 memory** (`Win32_Process`, with each process's commit, read by the shared
 PowerShell every 10 s while the window is open, the first read at once when it
-opens), not from a read of their own. Their CPU and I/O are counters over the
-real time between two readings, so a second one, of the list alone, follows
+opens), not from a read of their own. That listing says which processes there
+are; their CPU and working set are read every second besides, for those pids
+alone (`windows-host-live.ts`: a small helper `Add-Type` compiles once per
+PowerShell, about 1.5 s, then each read is one `OpenProcess` and
+`GetProcessTimes` per pid, about 2 ms of PowerShell's CPU for 15; `Get-Process
+-Id` cost 150 ms, a snapshot of every process per pid). So their CPU and memory
+move every second, for any period. A process the second's read finds ended, or
+started after the listing (Windows reused its pid), is gone from the tab at
+once. Their I/O is not in that read: it stays the listing's, counters over the
+real time between two listings, so a second one, of the list alone, follows
 1 s after the first answer (that listing takes 2 s for its CPU counters); for a
-period under 10 s they are the average since the last reading, at least 1 s and
-at most 10 s, and they read 0 only until then. If the listing fails, the
-host's processes keep their last value and the failure is in the log.
+period under 10 s their I/O is the average since the last listing, at least
+1 s and at most 10 s, and reads 0 only until then. A process seen once by the
+second's read, or whose times are not ours to read, has the listing's CPU. If
+the listing fails, the host's processes keep their last value and the failure
+is in the log.
 They count in the prifly tab as the host's, its
 dictation's and its intent model's, as on Linux, and the page's status has
 them apart as `priflyWindows`. Their read and write are all I/O, as Windows
