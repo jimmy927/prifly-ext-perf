@@ -85,6 +85,31 @@ const MACHINE = [
 const group = (out: string, key: string, hostPid: number | null = HOST) =>
   holdersOf(out, hostPid).groups.find((g) => g.key === key);
 
+describe("the console under a worker", () => {
+  const out = [
+    `memory|${GB(10)}|${GB(1)}|${GB(1)}`,
+    line(HOST, 4, "prifly.exe", 1, 0.5, '"C:\\p\\prifly.exe"'),
+    line(9100, HOST, "bun.exe", 3, 1, '"C:\\p\\bun.exe" "C:\\p\\dictation\\final-worker.ts"'),
+    line(9110, 9100, "conhost.exe", 0.02, 0.01, "conhost.exe 0x4"),
+    line(9300, HOST, "claude.exe", 0.5, 0.2),
+    line(9310, 9300, "conhost.exe", 0.03, 0.01),
+    line(500, 4, "conhost.exe", 0.04, 0.01),
+  ].join("\r\n");
+
+  test("is not a process of its parent's group, but its memory is the group's", () => {
+    const dictation = group(out, "dictation");
+    expect(dictation?.processes).toHaveLength(1);
+    expect(dictation?.processes[0]?.pid).toBe(9100);
+    expect(dictation?.commit).toBe(GB(3) + GB(0.02));
+    expect(group(out, "claude")?.processes).toHaveLength(1);
+    expect(group(out, "claude")?.commit).toBe(GB(0.5) + GB(0.03));
+  });
+
+  test("a console of no prifly process is a program of its own", () => {
+    expect(group(out, "p:conhost")?.processes).toHaveLength(1);
+  });
+});
+
 describe("who holds Windows' memory", () => {
   const holders = holdersOf(MACHINE, HOST);
 

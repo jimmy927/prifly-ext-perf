@@ -131,11 +131,35 @@ const held = (row: WindowsRow): HeldBy => ({
   ram: row.rss,
 });
 
-function add(groups: Map<string, Holder>, key: string, name: string, row: WindowsRow): void {
+/**
+ * The console Windows attaches under a process (`conhost.exe`) is not a
+ * process of prifly's: under one of prifly's own groups its memory is the
+ * group's, but it is neither listed nor counted.
+ */
+const isConsoleOf = (row: WindowsRow, parent: Named | null) =>
+  parent !== null && PRIFLY_GROUPS.has(parent) && row.comm.toLowerCase() === "conhost";
+
+const PRIFLY_GROUPS = new Set<Named>([
+  "dictation",
+  "intent",
+  "host",
+  "agent",
+  "claude",
+  "tests",
+  "window",
+]);
+
+function add(
+  groups: Map<string, Holder>,
+  key: string,
+  name: string,
+  row: WindowsRow,
+  listed = true,
+): void {
   const group = groups.get(key) ?? { key, name, commit: 0, ram: 0, processes: [] };
   group.commit += row.commit;
   group.ram += row.rss;
-  group.processes.push(held(row));
+  if (listed) group.processes.push(held(row));
   groups.set(key, group);
 }
 
@@ -188,7 +212,7 @@ function grouped(rows: Map<number, WindowsRow>, out: string, hostPid: number | n
     const group = groupOf(row, parent, hostPid, inHost.has(row.pid));
     if (row.commit > 0 || row.rss > 0) {
       if (group === null) add(programs, `p:${row.comm.toLowerCase()}`, row.comm, row);
-      else add(named, group, NAMES[group], row);
+      else add(named, group, NAMES[group], row, !isConsoleOf(row, parent));
     }
     for (const child of children.get(row.pid) ?? []) stack.push([child, group]);
   }
