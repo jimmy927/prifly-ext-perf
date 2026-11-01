@@ -56,8 +56,8 @@ export const RUN_SECONDS = 50;
 /**
  * How long one runs at a slower pace than a sample a second (`setEvery`).
  * Each start costs about 0.65 s of CPU (measured 2026-11-01), which over a
- * 50 s run at a sample every 5 s is as much as all its samples; an orphan
- * then lives this long at most.
+ * 50 s run at a sample every 5 s is four times what its samples cost; an
+ * orphan then lives this long at most.
  */
 export const SLOW_RUN_SECONDS = 300;
 
