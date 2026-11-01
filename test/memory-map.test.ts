@@ -31,7 +31,15 @@ const COUNTED: WindowsCounters = {
 
 const INFO = { name: "JIMMY-ROG", cores: 16, memTotal: GB(48) };
 
-const group = (key: string, name: string, commit: number, ram: number, count = 1): Holder => ({
+/** A group of `count` processes, the first `sessions` of them `claude` processes themselves. */
+const group = (
+  key: string,
+  name: string,
+  commit: number,
+  ram: number,
+  count = 1,
+  sessions = 0,
+): Holder => ({
   key,
   name,
   commit: GB(commit),
@@ -41,13 +49,14 @@ const group = (key: string, name: string, commit: number, ram: number, count = 1
     name,
     commit: GB(commit) / count,
     ram: GB(ram) / count,
+    ...(i < sessions ? { session: true } : {}),
   })),
 });
 
 const GROUPS = [
   group("wsl", "WSL VM", 24, 10),
   group("dictation", "Dictation workers", 4.5, 0.75, 2),
-  group("claude", "Claude sessions", 3.5, 1.5, 8),
+  group("claude", "Claude sessions", 3.5, 1.5, 8, 3),
   group("host", "prifly host", 3, 1.25),
   group("window", "prifly's window", 2.5, 2.5, 3),
   group("chrome", "Chrome", 4.5, 3.5, 26),
@@ -106,7 +115,7 @@ describe("the promised view", () => {
     expect(prifly?.value).toBe(GB(13.5));
     expect(prifly?.children?.map((c) => c.name)).toEqual([
       "Dictation worker ×2",
-      "Claude sessions ×8",
+      "Claude sessions 3 · 8 processes",
       "Host and helpers",
       "Window (WebView2) ×3",
     ]);

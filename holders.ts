@@ -8,7 +8,14 @@ import { helperOf, isClaude } from "./prifly";
 import { childrenOf, hostTreeOf, type WindowsRow, windowsRowsOf } from "./windows";
 
 /** One process of a group: its commit and its working set, in bytes. */
-export type HeldBy = { pid: number; name: string; commit: number; ram: number };
+export type HeldBy = {
+  pid: number;
+  name: string;
+  commit: number;
+  ram: number;
+  /** A session's own `claude` process (`isClaude`), not a tool or helper under it. */
+  session?: boolean;
+};
 
 /** One row of the list: what its processes are, and what they hold, added up. */
 export type Holder = {
@@ -129,6 +136,7 @@ const held = (row: WindowsRow): HeldBy => ({
   name: row.comm,
   commit: row.commit,
   ram: row.rss,
+  ...(isClaude(row) ? { session: true } : {}),
 });
 
 function add(groups: Map<string, Holder>, key: string, name: string, row: WindowsRow): void {
