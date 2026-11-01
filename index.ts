@@ -173,7 +173,17 @@ function showAll(
   current.api.show(chips, [item]);
 }
 
-function refreshWhileOpen(current: State): void {
+/** The window opened just now: what was kept is from before a gap, so start the processes afresh. Exported for the tests. */
+export function opened(current: State): void {
+  current.tables.clear();
+  // The store's growth is read only while open: a minute from before the gap says nothing now.
+  current.compressions.length = 0;
+  // `topProcesses` is the host's first reading: at once, whenever it last ran.
+  current.topWindowsAt = 0;
+  refreshWhileOpen(current);
+}
+
+export function refreshWhileOpen(current: State): void {
   const now = Date.now();
   current.tables.readAll(PROCS_KEEP, now);
   current.gpu.refresh(current.windows, now);
@@ -188,6 +198,8 @@ function refreshWhileOpen(current: State): void {
         }
         // A host on Windows itself is a Windows process: its own, and its window, are told apart.
         current.holders = holdersOf(top.out, current.tables.native ? process.pid : null);
+        // The same listing gives the host's own processes (the prifly tab), not a read of its own.
+        if (current.tables.native) current.tables.keepWindowsHost(top.out, PROCS_KEEP);
       })
       .catch((error: unknown) => {
         current.api.log("top_failed", { error: String(error) });
@@ -529,13 +541,9 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   const wasOpen = open(current);
   current.askedAt = Date.now();
   current.askedWindow = seconds;
-  // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
     hurry(current, current.askedAt);
-    current.tables.clear();
-    // The store's growth is read only while open: a minute from before the gap says nothing now.
-    current.compressions.length = 0;
-    refreshWhileOpen(current);
+    opened(current);
   }
   // The page names its tab (`panel/app.js`); the PSS read for the Memory tab stops when it leaves.
   const memoryTab = request.query["tab"] === "memory";
