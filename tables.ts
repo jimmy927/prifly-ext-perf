@@ -21,6 +21,7 @@ import { type ProcSnapshot, readProcs } from "./procs";
 import { parsePssRead, pssRead, readPss } from "./pss";
 import { keep } from "./ring";
 import { hostTreeOf, windowsProcessList } from "./windows";
+import { WindowsHostLive } from "./windows-host-live";
 import { PROCS_READ, parseProcsRead, type WslLinux } from "./wsl-exe";
 
 /** Containers' names and mounts change only when one starts or stops. */
@@ -29,8 +30,14 @@ const DOCKER_EVERY = 10_000;
 const WSL_TIMEOUT = 10_000;
 /** The `claude` processes' PSS walks their page tables: at most this often. */
 const PSS_EVERY = 10_000;
-/** The host's own Windows processes: a slower query than a counter, so every 2 s. */
-const WINDOWS_HOST_EVERY = 2_000;
+/**
+ * The host's own Windows processes come from `topProcesses`' listing every 10 s
+ * (`keepWindowsHost`). Their rates are counters over the real time between two
+ * readings (`averageProcs`), so the first reading of an open window is followed
+ * by one of the list alone this soon after: `topProcesses` takes 2 s, and the
+ * tab would read 0 until the second reading.
+ */
+const WINDOWS_HOST_SECOND = 1_000;
 
 export type TableDeps = {
   /** What reads the WSL VM on a host on Windows itself; null where this host's `/proc` is Linux. */
@@ -39,6 +46,10 @@ export type TableDeps = {
   windows: boolean;
   /** This host's pid: a Windows pid on a host on Windows itself. */
   hostPid: number;
+  /** What lists the Windows processes for the early second reading; `windowsProcessList` unless a test gives its own. */
+  windowsList?: () => Promise<string>;
+  /** What runs the per-second read of the host's processes (`liveRead`); `powershell` unless a test gives its own. */
+  windowsLive?: (script: string, timeout: number) => Promise<string>;
   log: (event: string, data: { error: string }) => void;
 };
 
@@ -51,6 +62,8 @@ export class Tables {
   dockerInfos = new Map<string, ContainerInfo>();
   /** On a host on Windows itself, the host and all it started there; empty elsewhere. */
   readonly windowsHost: ProcSnapshot[] = [];
+  /** Their CPU and working set every second, for the pids of the newest tree (`windows-host-live.ts`). */
+  readonly windowsHostLive: WindowsHostLive;
   /**
    * The PSS of the sessions' `claude` processes, by pid (`pss.ts`), read while
    * the Memory tab is open; a pid it could not read is absent.
@@ -63,12 +76,14 @@ export class Tables {
   private pssGeneration = 0;
   private dockerAt = 0;
   private procsReading = false;
-  private windowsHostAt = 0;
+  /** Whether the early second reading of the host's processes was asked for since the window opened. */
+  private windowsHostEarly = false;
   private windowsHostReading = false;
   private stopped = false;
 
   constructor(deps: TableDeps) {
     this.deps = deps;
+    this.windowsHostLive = new WindowsHostLive(deps.hostPid, deps.log, deps.windowsLive);
   }
 
   /** Whether this host's own Windows processes are read: only on a host on Windows itself. */
@@ -85,7 +100,9 @@ export class Tables {
       return;
     }
     this.readThroughWsl(wsl, seconds, true);
-    if (this.deps.windows) this.readWindowsHost(seconds, now);
+    if (!this.deps.windows) return;
+    this.readWindowsHostEarly(seconds, now);
+    this.windowsHostLive.read(this.windowsHost, seconds, now);
   }
 
   /** For the nanny: the table alone, kept `seconds`. */
@@ -144,6 +161,9 @@ export class Tables {
     this.procs.length = 0;
     this.containers.length = 0;
     this.windowsHost.length = 0;
+    // The window opens again (or the gap ended): the first reading is `topProcesses`', and the second follows soon.
+    this.windowsHostEarly = false;
+    this.windowsHostLive.clear();
     this.clearPss();
   }
 
@@ -157,6 +177,7 @@ export class Tables {
   /** No answer that lands after this is kept. */
   stop(): void {
     this.stopped = true;
+    this.windowsHostLive.stop();
   }
 
   private keepContainers(containers: ContainerSnapshot, seconds: number, now: number): void {
@@ -203,17 +224,36 @@ export class Tables {
       });
   }
 
-  /** The host and every process under it, from Windows' process list, every 2 s. */
-  private readWindowsHost(seconds: number, now: number): void {
-    if (this.windowsHostReading || now - this.windowsHostAt < WINDOWS_HOST_EVERY) return;
-    this.windowsHostAt = now;
+  /**
+   * The host and every process under it, from `topProcesses`' output (`index.ts`
+   * reads it every 10 s). Not kept when that holds no process list (`listerr|`)
+   * or the host is not in it: the tree keeps its last value, and the failure is logged.
+   */
+  keepWindowsHost(out: string, seconds: number): void {
+    if (this.stopped) return;
+    const tree = hostTreeOf(out, this.deps.hostPid, Date.now());
+    if (tree.procs.size === 0) {
+      const why = /^listerr\|(.*)$/m.exec(out)?.[1]?.trim();
+      this.deps.log("windows_host_failed", {
+        error: why ? `process list: ${why}` : "the host is not in the process list",
+      });
+      return;
+    }
+    keep(this.windowsHost, tree, seconds);
+  }
+
+  /**
+   * With one reading kept, the process list alone gives the second, `WINDOWS_HOST_SECOND`
+   * after the first; asked once per opening, so a failure is not asked again every second.
+   */
+  private readWindowsHostEarly(seconds: number, now: number): void {
+    const first = this.windowsHost[0];
+    if (this.windowsHostEarly || this.windowsHostReading || this.windowsHost.length !== 1) return;
+    if (first === undefined || now - first.at < WINDOWS_HOST_SECOND) return;
+    this.windowsHostEarly = true;
     this.windowsHostReading = true;
-    windowsProcessList()
-      .then((out) => {
-        if (!this.stopped) {
-          keep(this.windowsHost, hostTreeOf(out, this.deps.hostPid, Date.now()), seconds);
-        }
-      })
+    (this.deps.windowsList ?? windowsProcessList)()
+      .then((out) => this.keepWindowsHost(out, seconds))
       .catch((error: unknown) => this.deps.log("windows_host_failed", { error: String(error) }))
       .finally(() => {
         this.windowsHostReading = false;
