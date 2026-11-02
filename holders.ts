@@ -8,7 +8,16 @@ import { helperOf, isClaude } from "./prifly";
 import { childrenOf, hostTreeOf, type WindowsRow, windowsRowsOf } from "./windows";
 
 /** One process of a group: its commit and its working set, in bytes. */
-export type HeldBy = { pid: number; name: string; commit: number; ram: number };
+export type HeldBy = {
+  pid: number;
+  name: string;
+  commit: number;
+  ram: number;
+  /** A session's own `claude` process (`isClaude`), not a tool or helper under it. */
+  session?: boolean;
+  /** An outermost test run (`isTestRun`, its parent not one): a run, not one of its workers. */
+  run?: boolean;
+};
 
 /** One row of the list: what its processes are, and what they hold, added up. */
 export type Holder = {
@@ -69,6 +78,20 @@ export function isTestRun(argv: string[]): boolean {
 }
 
 /**
+ * A bun running prifly's gate: `…/gate/cli.ts`, `scripts/test-changed.ts` or
+ * `scripts/timed-run.ts`. A land's gate runs them in a chain (the gate, `bun
+ * run test:changed`, test-changed, timed-run, the gate again, `bun test`, its
+ * workers), under claude.exe or the host's land runner (2026-11-01: four
+ * overlapping gates ran 16 test workers and a dozen wrappers).
+ */
+const GATE_SCRIPT = /[\\/](gate[\\/]cli|scripts[\\/](test-changed|timed-run))\.[cm]?[jt]s$/;
+const isGate = (argv: string[]) =>
+  word(argv[0] ?? "") === "bun" && argv.slice(1).some((arg) => GATE_SCRIPT.test(arg));
+
+/** Part of a test run: a test command, or a bun running prifly's gate. */
+const isTestProcess = (row: WindowsRow) => isTestRun(row.argv) || isGate(row.argv);
+
+/**
  * prifly's agent on Windows and its relays: `bun …\node-agent\main.ts
  * --relay-dir …` and `bun …\node-agent\main.ts relay …`, a session's
  * `claude.exe` under each relay (2026-10-29), or built, `prifly-agent`.
@@ -88,8 +111,8 @@ const isPriflyApp = (row: WindowsRow) => /[\\/]sh\.prifly\.app[\\/]/i.test(row.a
  * What a process is, from its parent's group (null for a process with no
  * parent in the list) and whether it is under the host (`hostTreeOf`). The
  * host's helpers go by `helperOf`, as on the prifly tab; `claude` by
- * `isClaude`. A test run counts as one under the host, the agent or a session.
- * A WebView2 under the host, or the prifly app outside it, is prifly's window.
+ * `isClaude`. A test run (or a bun running prifly's gate) is one wherever its
+ * parent is, and everything under it is part of it. A WebView2 under the host, or the prifly app outside it, is prifly's window.
  * A process that is none of these is its parent's if that is one of the
  * groups, else a program of its own name (null).
  */
@@ -105,11 +128,11 @@ function groupOf(
 
 /** prifly's own kinds: its sessions, the host's helpers, test runs, the agent and the window. */
 function priflyGroup(row: WindowsRow, parent: Named | null, inHost: boolean): Named | null {
+  // `parent` is only for the app's window below; a test run is one wherever its parent is.
   if (isClaude(row)) return "claude";
   const helper = inHost ? helperOf(row) : "host";
   if (helper === "dictation" || helper === "intent") return helper;
-  const underPrifly = parent === "host" || parent === "claude" || parent === "agent";
-  if (underPrifly && isTestRun(row.argv)) return "tests";
+  if (isTestProcess(row)) return "tests";
   if (isWindowsAgent(row)) return "agent";
   if (!inHost && parent === null && isPriflyApp(row)) return "window";
   return null;
@@ -124,11 +147,13 @@ function programGroup(row: WindowsRow, inHost: boolean): Named | null {
   return DOCKER.test(name) ? "docker" : null;
 }
 
-const held = (row: WindowsRow): HeldBy => ({
+const held = (row: WindowsRow, run: boolean): HeldBy => ({
   pid: row.pid,
   name: row.comm,
   commit: row.commit,
   ram: row.rss,
+  ...(isClaude(row) ? { session: true } : {}),
+  ...(run ? { run: true } : {}),
 });
 
 /**
@@ -154,12 +179,13 @@ function add(
   key: string,
   name: string,
   row: WindowsRow,
+  run = false,
   listed = true,
 ): void {
   const group = groups.get(key) ?? { key, name, commit: 0, ram: 0, processes: [] };
   group.commit += row.commit;
   group.ram += row.rss;
-  if (listed) group.processes.push(held(row));
+  if (listed) group.processes.push(held(row, run));
   groups.set(key, group);
 }
 
@@ -204,17 +230,19 @@ function grouped(rows: Map<number, WindowsRow>, out: string, hostPid: number | n
   );
   const named = new Map<string, Holder>();
   const programs = new Map<string, Holder>();
-  const stack: [WindowsRow, Named | null][] = [...rows.values()]
+  // Each entry also says whether the parent is a test command: a `bun test` under one is its worker, not a run.
+  const stack: [WindowsRow, Named | null, boolean][] = [...rows.values()]
     .filter((row) => !isChild.has(row.pid))
-    .map((row) => [row, null]);
+    .map((row) => [row, null, false]);
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    const [row, parent] = next;
+    const [row, parent, underTest] = next;
     const group = groupOf(row, parent, hostPid, inHost.has(row.pid));
+    const test = group === "tests" && isTestRun(row.argv);
     if (row.commit > 0 || row.rss > 0) {
       if (group === null) add(programs, `p:${row.comm.toLowerCase()}`, row.comm, row);
-      else add(named, group, NAMES[group], row, !isConsoleOf(row, parent));
+      else add(named, group, NAMES[group], row, test && !underTest, !isConsoleOf(row, parent));
     }
-    for (const child of children.get(row.pid) ?? []) stack.push([child, group]);
+    for (const child of children.get(row.pid) ?? []) stack.push([child, group, test]);
   }
   for (const group of [...named.values(), ...programs.values()]) group.processes.sort(byCommit);
   return { named: [...named.values()], programs: [...programs.values()].sort(byCommit) };

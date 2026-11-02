@@ -223,6 +223,69 @@ describe("who holds Windows' memory", () => {
   });
 });
 
+/**
+ * One land's gate chain, from the shell under its parent down to the workers
+ * (2026-11-01): 6 gate processes, `bun test`, 4 workers; 11 with the shell.
+ */
+function gateChain(base: number, parent: number): string[] {
+  const bun = (n: number, up: number, cmd: string) =>
+    line(base + n, up, "bun.exe", 0.2, 0.1, `"C:\\p\\bun.exe" ${cmd}`);
+  const gate = "C:\\r\\apps\\desktop-host\\src\\gate\\cli.ts";
+  return [
+    line(base, parent, "sh.exe", 0.01, 0.01, "sh -c land"),
+    bun(1, base, `${gate} --tmp`),
+    bun(2, base + 1, "run test:changed"),
+    bun(3, base + 2, "C:\\r\\scripts\\test-changed.ts"),
+    bun(4, base + 3, "C:\\r\\scripts\\timed-run.ts"),
+    bun(5, base + 4, `${gate} --cores 4`),
+    bun(6, base + 5, "test --changed=abc123 --parallel=4"),
+    ...[7, 8, 9, 10].map((n) => bun(n, base + 6, "test --test-worker")),
+  ];
+}
+
+describe("a land's gate chain", () => {
+  // Four lands at once: two under sessions, one under the host, one under the agent.
+  const out = [
+    "memory|1|0|0",
+    line(500, 4, "explorer.exe", 0.5, 0.2),
+    line(HOST, 500, "prifly.exe", 1.8, 0.6, '"C:\\p\\prifly.exe"'),
+    line(9300, HOST, "claude.exe", 0.46, 0.2),
+    line(9301, HOST, "claude.exe", 0.46, 0.2),
+    line(
+      9700,
+      500,
+      "bun.exe",
+      0.3,
+      0.05,
+      "bun.exe C:\\p\\node-agent\\main.ts --port 4201 --relay-dir C:\\r",
+    ),
+    ...gateChain(9810, 9300),
+    ...gateChain(9830, 9301),
+    ...gateChain(9850, HOST),
+    ...gateChain(9870, 9700),
+    // A bun that is none of it, beside them.
+    line(5000, 500, "bun.exe", 0.4, 0.1, "bun x tsc"),
+  ].join("\r\n");
+
+  test("all of it is one test-runs group, whoever started it; the shells stay their parent's", () => {
+    const tests = group(out, "tests");
+    // Per chain: 5 gate processes, `bun test` and 4 workers, not the shell above them.
+    expect(tests?.processes).toHaveLength(4 * 10);
+    expect(tests?.commit).toBe(4 * 10 * GB(0.2));
+    expect(group(out, "claude")?.processes.map((p) => p.pid)).toContain(9810);
+  });
+
+  test("only the outermost bun test of each chain is a run", () => {
+    const runs = group(out, "tests")?.processes.filter((p) => p.run === true);
+    expect(runs?.map((p) => p.pid).sort()).toEqual([9816, 9836, 9856, 9876]);
+  });
+
+  test("nothing of it is left to the bun program", () => {
+    const bun = group(out, "p:bun");
+    expect(bun?.processes.map((p) => p.pid)).toEqual([5000]);
+  });
+});
+
 test("a test run is bun test, a package script's test, node --test or a test runner", () => {
   expect(isTestRun(["C:\\p\\bun.exe", "test", "x.test.ts"])).toBe(true);
   expect(isTestRun(["npm.cmd", "run", "test"])).toBe(true);
