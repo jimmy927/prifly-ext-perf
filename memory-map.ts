@@ -88,7 +88,8 @@ const PRIFLY_PARTS: [string, string, string[]][] = [
   ["claude", "Claude sessions", ["claude"]],
   ["host", "Host and helpers", ["host", "intent", "agent"]],
   ["window", "Window (WebView2)", ["window"]],
-  ["bun", "Other bun", ["tests", "p:bun"]],
+  ["tests", "Test runs", ["tests"]],
+  ["bun", "Other bun", ["p:bun"]],
 ];
 
 /** The programs with a tile of their own beside prifly. */
@@ -106,12 +107,31 @@ const counted = (name: string, count: number) => (count > 1 ? `${name} ×${count
 
 const sum = (tiles: readonly { value: number }[]) => tiles.reduce((s, t) => s + t.value, 0);
 
+/**
+ * A group's name with its head count and the processes beside: the Claude
+ * group's sessions (the `claude` processes) as "Claude sessions 18 · 70
+ * processes", the test runs (outermost `bun test`) as "Test runs 4 · 28
+ * processes". The processes under them hold their memory all the same.
+ */
+function headsNamed(name: string, groups: Holder[], head: "session" | "run"): string {
+  const all = groups.flatMap((g) => g.processes);
+  const heads = all.filter((p) => p[head] === true).length;
+  if (heads === 0) return counted(name, all.length);
+  if (all.length === heads) return `${name} ${heads}`;
+  return `${name} ${heads} · ${all.length} processes`;
+}
+
 /** Several holder groups as one tile: their commit as its value, their working set as `ram`. */
 function leaf(key: string, name: string, colour: string, why: string, groups: Holder[]): Tile {
   const count = groups.reduce((n, g) => n + g.processes.length, 0);
   return {
     key,
-    name: counted(name, count),
+    name:
+      key === "claude"
+        ? headsNamed(name, groups, "session")
+        : key === "tests"
+          ? headsNamed(name, groups, "run")
+          : counted(name, count),
     colour,
     value: groups.reduce((s, g) => s + g.commit, 0),
     ram: groups.reduce((s, g) => s + g.ram, 0),
