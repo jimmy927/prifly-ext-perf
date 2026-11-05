@@ -42,7 +42,7 @@ describe("a prifly host on Windows itself", () => {
       "prifly/Dictation (grey words)/1000",
       "WSL/WSL other/300",
       "Windows/Desktop compositor (dwm)/500",
-      "Windows/Windows other/200",
+      "Windows/No process (driver, display)/200",
     ]);
     expect(rows.reduce((a, r) => a + r.mib, 0)).toBeCloseTo(4000, 6);
   });

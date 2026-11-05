@@ -64,17 +64,17 @@ export type GpuProcesses = { uses: GpuUse[]; names: Map<number, string> };
 
 const INSTANCE = /^pid_(\d+)_luid_(0x[0-9a-f]+_0x[0-9a-f]+)_phys_\d+(?:#\d+)?$/i;
 
-/** One pid's instances on one adapter, as `G` (dedicated) and `C` (committed) figures. */
-type Instances = { luid: string; pid: number; dedicated: number[]; committed: number[] };
+/** One pid's instances on one adapter: each one's local usage, MiB. */
+type Instances = { luid: string; pid: number; local: number[] };
 
-function addInstance(into: Map<string, Instances>, use: GpuUse, kind: "G" | "C"): void {
+function addInstance(into: Map<string, Instances>, use: GpuUse): void {
   const key = `${use.luid}/${use.pid}`;
   let seen = into.get(key);
   if (seen === undefined) {
-    seen = { luid: use.luid, pid: use.pid, dedicated: [], committed: [] };
+    seen = { luid: use.luid, pid: use.pid, local: [] };
     into.set(key, seen);
   }
-  (kind === "G" ? seen.dedicated : seen.committed).push(use.mib);
+  seen.local.push(use.mib);
 }
 
 function instanceUse(instance: string, bytes: string): GpuUse | null {
@@ -84,19 +84,11 @@ function instanceUse(instance: string, bytes: string): GpuUse | null {
   return { pid: Number(match[1]), luid: (match[2] ?? "").toLowerCase(), mib };
 }
 
-/** The instances' figure: the WSL VM's add up, every other process's overlap and count the largest. */
-function combine(figures: number[], sum: boolean): number | undefined {
-  if (figures.length === 0) return undefined;
-  return sum ? figures.reduce((a, b) => a + b, 0) : Math.max(...figures);
-}
-
 function reduceInstances(one: Instances, names: Map<number, string>): GpuUse[] {
   // Names come in any order, so the VM is told apart only once all lines are read.
-  const sum = names.get(one.pid) === WSL_VM;
-  const mib = combine(one.dedicated, sum);
-  if (mib === undefined) return [];
-  const cap = combine(one.committed, sum);
-  return [{ pid: one.pid, luid: one.luid, mib: cap === undefined ? mib : Math.min(mib, cap) }];
+  const mib =
+    names.get(one.pid) === WSL_VM ? one.local.reduce((a, b) => a + b, 0) : Math.max(...one.local);
+  return [{ pid: one.pid, luid: one.luid, mib }];
 }
 
 /**
@@ -104,10 +96,7 @@ function reduceInstances(one: Instances, names: Map<number, string>): GpuUse[] {
  * (`phys_0#2`) counts its largest, not the sum: the instances overlap. The WSL
  * VM (`vmwp`) is the exception: it has one instance per WSL process using the
  * GPU, so its instances add up (3,820 and 1,598 MiB with dictation's final and
- * grey workers running: 5.4 GB). A process counts at most what it has
- * committed: some report a dedicated usage far past the card (NVIDIA Overlay
- * 34.9 GB on an 8 GB card, 86 MB committed), which would otherwise take most
- * of the card's shares.
+ * grey workers running: 5.4 GB).
  */
 export function parseGpuProcesses(out: string): GpuProcesses {
   const instances = new Map<string, Instances>();
@@ -119,8 +108,8 @@ export function parseGpuProcesses(out: string): GpuProcesses {
       names.set(Number(first), second.toLowerCase());
       continue;
     }
-    const use = kind === "G" || kind === "C" ? instanceUse(first, second) : null;
-    if (use !== null) addInstance(instances, use, kind as "G" | "C");
+    const use = kind === "L" ? instanceUse(first, second) : null;
+    if (use !== null) addInstance(instances, use);
   }
   const uses = [...instances.values()].flatMap((one) => reduceInstances(one, names));
   return { uses, names };
@@ -128,25 +117,28 @@ export function parseGpuProcesses(out: string): GpuProcesses {
 
 export type Share = { name: string; mib: number };
 export type Shares = {
-  /** The biggest Windows programs, scaled so that all shares together are at most what is used. */
+  /** The biggest Windows programs, as counted. */
   named: Share[];
-  /** What the WSL VM (`vmwp`) holds, as counted: never scaled down. */
+  /** What the WSL VM (`vmwp`) holds, as counted. */
   vm: number;
-  /** The rest of what is used: Windows programs not named, and what no counter owns. */
+  /** The Windows programs not named. */
   other: number;
+  /** What is used but in no process's count: the driver's and Windows' own. */
+  unowned: number;
   /** What prifly's workers that run on Windows itself hold, by pid, as counted: never scaled down. */
   workers?: Map<number, number>;
 };
 
 /**
- * One adapter's processes, as shares of what is used. The WSL VM's figure is
- * taken as it is (up to `used`): its dedicated and committed figures agree.
- * Windows programs' figures overlap (the desktop compositor counts memory its
- * clients also count), so they are scaled down until they fit in what the VM
- * leaves; the rest is `other`. A program with several processes (chrome) is
- * one share. The pids in `workers`, prifly's model workers on a host that
- * runs on Windows itself, are taken as they are too, each its own share, so
- * that `rowsOf` can split them into their models.
+ * One adapter's processes, as shares of what is used. Each process's local
+ * usage is its own allocations only, so the figures do not overlap and are
+ * taken as counted: on 2026-11-05 they added up to 4,679 of the 5,327 MiB in
+ * use, and the 648 left is `unowned`. Only where they pass `used` (the
+ * counters and `nvidia-smi` are read at different moments) are the Windows
+ * programs scaled down into what the VM and the workers leave. A program
+ * with several processes (chrome) is one share. The pids in `workers`,
+ * prifly's model workers on a host that runs on Windows itself, are each a
+ * share of their own, so that `rowsOf` can split them into their models.
  */
 export function shareOut(
   uses: GpuUse[],
@@ -180,7 +172,14 @@ export function shareOut(
     .sort((a, b) => b.mib - a.mib)
     .slice(0, NAMED_WINDOWS);
   const shown = named.reduce((a, b) => a + b.mib, 0);
-  return { named, vm, other: Math.max(0, room - shown), workers: mine };
+  const counted = sum * scale;
+  return {
+    named,
+    vm,
+    other: Math.max(0, counted - shown),
+    unowned: Math.max(0, room - counted),
+    workers: mine,
+  };
 }
 
 /** One model inside a worker that holds several (Parakeet and turbo in the final worker). */
@@ -465,6 +464,15 @@ export function rowsOf(
       name: "Windows other",
       what: "",
       mib: shares.other,
+    });
+  }
+  if (shares.unowned >= 1) {
+    windows.push({
+      kind: "g-none",
+      where: "Windows",
+      name: "No process (driver, display)",
+      what: "In use on the card but in no process's count: the graphics driver's and Windows' own memory",
+      mib: shares.unowned,
     });
   }
   return [...workerRows(workers, holders ?? []), ...vmRows(shares.vm, inVm, dxg), ...windows];

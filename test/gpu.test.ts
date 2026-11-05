@@ -3,7 +3,6 @@ import {
   GREY_NEEDS_MIB,
   greyState,
   HOLDERS_FRESH_MS,
-  parseGpuProcesses,
   parseNvidiaSmi,
   pickLuid,
   readGreyNeeds,
@@ -72,53 +71,6 @@ describe("GPU adapter counters", () => {
   });
 });
 
-describe("GPU process counters", () => {
-  const out = [
-    `G|pid_13644_luid_${NVIDIA}_phys_0|${300 * 2 ** 20}`,
-    `G|pid_13644_luid_0x00000000_0x00013915_phys_0#2|${500 * 2 ** 20}`,
-    `G|pid_13644_luid_0x00000000_0x000128c5_phys_0|${40 * 2 ** 20}`,
-    `G|pid_7_luid_0x00000000_0x00013915_phys_0|${100 * 2 ** 20}`,
-    "G|not_an_instance|5",
-    "P|13644|Chrome",
-    "P|7|vmwp",
-    "",
-  ].join("\r\n");
-
-  test("a pid listed twice on one adapter counts its largest, not the sum", () => {
-    const { uses } = parseGpuProcesses(out);
-    const mine = uses.filter((u) => u.luid === NVIDIA && u.pid === 13644);
-    expect(mine).toHaveLength(1);
-    expect(mine[0]?.mib).toBe(500);
-  });
-
-  test("another adapter's instances stay under their own luid, and names are resolved", () => {
-    const { uses, names } = parseGpuProcesses(out);
-    expect(uses.filter((u) => u.luid === INTEL).map((u) => u.pid)).toEqual([13644]);
-    expect(uses).toHaveLength(3);
-    expect(names.get(13644)).toBe("chrome");
-    expect(names.get(7)).toBe("vmwp");
-  });
-
-  test("a process counts at most what it has committed", () => {
-    // 2026-10-09: NVIDIA Overlay said 34,929 MB dedicated on the 8 GB card, 86 MB committed.
-    const { uses } = parseGpuProcesses(
-      [
-        `G|pid_38264_luid_${NVIDIA}_phys_0|${34929 * 2 ** 20}`,
-        `C|pid_38264_luid_${NVIDIA}_phys_0|${86 * 2 ** 20}`,
-        `G|pid_7_luid_${NVIDIA}_phys_0|${3820 * 2 ** 20}`,
-        `C|pid_7_luid_${NVIDIA}_phys_0|${3890 * 2 ** 20}`,
-        `G|pid_9_luid_${NVIDIA}_phys_0|${200 * 2 ** 20}`,
-      ].join("\n"),
-    );
-    const mib = (pid: number) => uses.find((u) => u.pid === pid)?.mib;
-    expect(mib(38264)).toBe(86);
-    expect(mib(7)).toBe(3820);
-    // No committed figure: the dedicated one stands.
-    expect(mib(9)).toBe(200);
-    expect(uses).toHaveLength(3);
-  });
-});
-
 describe("sharing the card out", () => {
   const names = new Map([
     [1, "dwm"],
@@ -128,15 +80,24 @@ describe("sharing the card out", () => {
   ]);
   const use = (pid: number, mib: number) => ({ pid, luid: NVIDIA, mib });
   const total = (s: ReturnType<typeof shareOut>) =>
-    s.vm + s.other + s.named.reduce((a, b) => a + b.mib, 0);
+    s.vm + s.other + s.unowned + s.named.reduce((a, b) => a + b.mib, 0);
 
-  test("Windows figures that overlap are scaled into what the VM leaves; the VM is not", () => {
+  test("Windows figures are taken as counted; two chrome processes are one program", () => {
+    const shares = shareOut([use(1, 400), use(2, 300), use(3, 200), use(4, 4000)], names, 6000);
+    expect(shares.vm).toBe(4000);
+    expect(shares.named).toEqual([
+      { name: "chrome", mib: 500 },
+      { name: "dwm", mib: 400 },
+    ]);
+    expect(shares.other).toBe(0);
+    expect(shares.unowned).toBe(1100);
+    expect(total(shares)).toBeCloseTo(6000, 6);
+  });
+
+  test("Windows figures past what the VM leaves (read at another moment) are scaled into it", () => {
     const shares = shareOut([use(1, 1000), use(2, 1500), use(3, 1500), use(4, 4000)], names, 6000);
     expect(total(shares)).toBeCloseTo(6000, 6);
-    expect(shares.other).toBeCloseTo(0, 6);
-    expect(shares.vm).toBe(4000);
-    // Two chrome processes are one program.
-    expect(shares.named.map((s) => s.name)).toEqual(["chrome", "dwm"]);
+    expect(shares.unowned).toBeCloseTo(0, 6);
     expect(shares.named[0]?.mib).toBeCloseTo(1500, 6);
     expect(shares.named[1]?.mib).toBeCloseTo(500, 6);
   });
@@ -148,27 +109,45 @@ describe("sharing the card out", () => {
     expect(total(shares)).toBeCloseTo(4000, 6);
   });
 
-  test("what no counter owns is Windows other", () => {
+  test("what no process counts is unowned, not Windows other", () => {
     const shares = shareOut([use(1, 500), use(4, 3000)], names, 4000);
-    expect(shares.other).toBeCloseTo(500, 6);
+    expect(shares.other).toBe(0);
+    expect(shares.unowned).toBeCloseTo(500, 6);
     expect(shares.vm).toBe(3000);
     expect(total(shares)).toBeCloseTo(4000, 6);
+  });
+
+  test("programs past the named ones are Windows other", () => {
+    const many = new Map([...Array(7)].map((_, i) => [10 + i, `p${i}`] as [number, string]));
+    const shares = shareOut(
+      [...Array(7)].map((_, i) => use(10 + i, 100 - i)),
+      many,
+      1000,
+    );
+    expect(shares.named).toHaveLength(5);
+    expect(shares.other).toBe(95 + 94);
+    expect(shares.unowned).toBe(1000 - 679);
   });
 
   test("the rows put prifly and WSL first and are as many MiB as used", () => {
     const shares = shareOut([use(1, 500), use(4, 3000)], names, 4000);
     const rows = rowsOf(shares, null);
-    expect(rows.map((r) => `${r.where}/${r.name}`)).toEqual([
-      "WSL/prifly (WSL)",
-      "Windows/Desktop compositor (dwm)",
-      "Windows/Windows other",
+    expect(rows.map((r) => `${r.where}/${r.name}/${r.kind}`)).toEqual([
+      "WSL/prifly (WSL)/g-wsl",
+      "Windows/Desktop compositor (dwm)/g-win",
+      "Windows/No process (driver, display)/g-none",
     ]);
     expect(rows.reduce((a, r) => a + r.mib, 0)).toBeCloseTo(4000, 6);
   });
 });
 
 describe("plain names for Windows holders", () => {
-  const share = (name: string) => ({ named: [{ name, mib: 500 }], vm: 0, other: 0 });
+  const share = (name: string) => ({
+    named: [{ name, mib: 500 }],
+    vm: 0,
+    other: 0,
+    unowned: 0,
+  });
 
   test("a known process gets a plain name and a Why", () => {
     expect(rowsOf(share("dwm"), null)[0]).toMatchObject({
@@ -200,6 +179,7 @@ describe("plain names for Windows holders", () => {
         ],
         vm: 0,
         other: 0,
+        unowned: 0,
       },
       null,
     );

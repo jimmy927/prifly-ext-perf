@@ -107,12 +107,17 @@ memory); otherwise they **would start** when free memory reaches what they
 need, and **would not** when it is short. Without the file (older host,
 dictation not running, or older than ten minutes) free memory alone decides.
 The headline says grey words would not start when they would not, unless CPU,
-memory or disk is really short. Windows' per-process counters (`GPU Process Memory`)
-count each process at most what it has committed (NVIDIA Overlay has claimed
-34.9 GB dedicated on an 8 GB card), and a process listed more than once on
-the card counts its largest instance: Windows programs' figures overlap, and
-so are scaled down to fit in what the WSL VM leaves; `vmwp`, taken as counted,
-is the WSL VM (one instance per WSL process using the GPU, so its instances
+memory or disk is really short. Each process's share is Windows' `GPU Process
+Memory(*)\Local Usage`: what its own allocations hold in the card's memory.
+Not `Dedicated Usage`, which also counts allocations a process has opened from
+others and so overlaps: the desktop compositor said 11,928 MiB on the 8 GB card
+where its local usage was 678 (2026-11-05). Local usage does not overlap, so
+each figure is taken as counted (that day they added up to 4,679 of the 5,327
+MiB in use), and what no process counts is its own row, "No process (driver,
+display)". Only where Windows programs' figures pass what is left (the counters
+and `nvidia-smi` are read at different moments) are they scaled down to fit.
+A process listed more than once on the card counts its largest instance;
+`vmwp` is the WSL VM (one instance per WSL process using the GPU, so its instances
 add up), split into prifly's model workers by `~/.local/share/prifly/gpu-holders.json`
 (fresh, live pids only), else one "prifly (WSL)" bar. A worker whose entry
 carries `parts` (`[{model, mib}]`, such as Parakeet and turbo in dictation's
@@ -388,8 +393,9 @@ link "Its memory as a map" opens the tab scrolled to this section
 - **the WSL VM's remainder**: named after the other WSL processes that have
   `/dev/dxg` open ("python3 (pid 123)"), else "WSL other"; with no holders file,
   the VM's whole share is one "prifly (WSL)" tile;
-- **each Windows program** the card names (NVIDIA overlay, dwm, Explorer…) and
-  "Windows other";
+- **each Windows program** the card names (NVIDIA overlay, dwm, Explorer…),
+  "Windows other" for the programs too small to name, and **No process
+  (driver, display)**: what is in use but in no process's count;
 - **Free**, with what grey words need to start (`greyNeeds`, 1.5 GB by
   default) dashed on it and a line "grey words need 1.5 GB: would start" or
   "would not start"; where free is short of it the dashes cover the whole tile

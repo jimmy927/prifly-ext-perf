@@ -69,9 +69,8 @@ export const size = (mib: number): string =>
 const exact = (mib: number) => `${Math.round(mib).toLocaleString("en")} MiB`;
 
 const WINDOWS_WHY =
-  "A Windows program's share of the card. Windows' counters for programs overlap, so they are scaled down to fit in what the WSL VM leaves.";
-const WINDOWS_OTHER_WHY =
-  "The rest of what is in use: Windows programs not named, and what no counter owns.";
+  "A Windows program's share of the card: what its own allocations hold in the card's memory (Windows' Local Usage counter).";
+const WINDOWS_OTHER_WHY = "Windows programs too small to get a tile of their own.";
 const WSL_OTHER_WHY =
   "The rest of the WSL VM's share: WSL processes other than prifly's model workers that have the GPU open, or GPU use in another distro or Docker Desktop.";
 

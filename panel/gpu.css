@@ -47,6 +47,10 @@
 .g-win2 {
   background: color-mix(in srgb, var(--s-0) 55%, var(--muted));
 }
+/* What no process holds, the driver's and Windows' own: the RAM view's colour for what no process holds. */
+.g-none {
+  background: var(--k-relay);
+}
 .g-unknown {
   background: repeating-linear-gradient(
     135deg,
