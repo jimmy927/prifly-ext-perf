@@ -269,8 +269,15 @@ the rest):
     user's process, a failed read) that process counts its RSS, and the tile
     says so;
   - **prifly agent and relays** (with the host inside WSL, the host and its
-    helpers too), **MCP servers** and **Session tools** (the shells, tests and
-    builds turns run, and the lands' and git buttons' runs), by RSS.
+    helpers too) and **MCP servers**, by RSS;
+  - **Session tools ×N** (the shells, tests and builds turns run, and the
+    lands' and git buttons' runs), split by program: test gates
+    waiting/running, tsc, bun test, pytest, builds, shells and any other
+    program by name, each its own tile. Programs under 2 % of the tools fold
+    into "Other ×N". Counted by PSS like claude, read for the tool and gate
+    processes in the same 10 s read; a process whose PSS could not be read
+    counts its RSS, and the tile says how many. With fewer than two tiles the
+    tile stays whole.
 
   The group is the sum of its tiles.
 - **Docker containers**: every other container's anon memory (its cgroup's

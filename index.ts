@@ -396,11 +396,14 @@ function priflyOf(current: State, seconds: number, memoryTab: boolean) {
     kinds,
   );
   const others = { linux: otherPrograms(procs.value, counted), windows };
-  // The `claude` processes' PSS, for the Memory tab's WSL tile: read only while that tab is open.
+  // The `claude`, tool and gate processes' PSS, for the Memory tab's WSL tile: read only while that tab is open.
   if (memoryTab) {
-    const claudes = procs.value.filter((proc) => kinds.get(proc.pid) === "claude");
+    const shared = procs.value.filter((proc) => {
+      const kind = kinds.get(proc.pid);
+      return kind === "claude" || kind === "tools" || kind === "gates";
+    });
     tables.readPss(
-      claudes.map((proc) => proc.pid),
+      shared.map((proc) => proc.pid),
       Date.now(),
     );
   }

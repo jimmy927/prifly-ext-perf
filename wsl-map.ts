@@ -15,6 +15,7 @@ import type { Container } from "./docker";
 import type { Tile } from "./memory-map";
 import type { Kind, SessionRow } from "./prifly";
 import type { Proc } from "./procs";
+import { bytesOf, counted, toolTiles } from "./tool-tiles";
 import type { LinuxSample } from "./wsl";
 
 /** Linux's read of the VM: what the split needs of a `LinuxSample`. */
@@ -74,13 +75,7 @@ const KERNEL_WHY = {
     "allocator (WSL's GPU and Hyper-V drivers, for example), and Linux does not name it.",
 };
 
-/** Bytes that are a number and not below 0: a missing or odd reading counts nothing. */
-const bytesOf = (n: number) => (Number.isFinite(n) ? Math.max(0, n) : 0);
-
 const sum = (tiles: readonly { value: number }[]) => tiles.reduce((s, t) => s + t.value, 0);
-
-/** "claude ×26": a count after a name where there is more than one. */
-const counted = (name: string, count: number) => (count > 1 ? `${name} ×${count}` : name);
 
 /** A group of `children`, its value theirs added up. */
 const group = (tile: Omit<Tile, "value" | "children">, children: Tile[]): Tile => ({
@@ -183,6 +178,13 @@ export function inVmOf(
   const claudeRss = rss(by.claude);
   const read = by.claude.filter((p) => pss.has(p.pid)).length;
   const claudePss = by.claude.reduce((s, p) => s + bytesOf(pss.get(p.pid) ?? p.rss), 0);
+  const tools = toolTiles(by.tools, pss);
+  const toolsTile = {
+    key: "wsl:prifly:tools",
+    name: counted("Session tools", by.tools.length),
+    colour: "k-tools",
+    why: tools.why,
+  };
   tiles.push(
     {
       key: "wsl:prifly:claude",
@@ -207,15 +209,10 @@ export function inVmOf(
       value: rss(by.mcp),
       why: "The MCP servers each session's claude starts, counted per process (RSS).",
     },
-    {
-      key: "wsl:prifly:tools",
-      name: counted("Session tools", by.tools.length),
-      colour: "k-tools",
-      value: rss(by.tools),
-      why:
-        "What the sessions' turns run: shells, tests, builds, and the lands and git buttons' runs " +
-        "with their test gates, counted per process (RSS).",
-    },
+    // One child or none: the tile stays whole, like the kernel's.
+    tools.children.length < 2
+      ? { ...toolsTile, value: tools.value }
+      : group(toolsTile, tools.children),
   );
   return { prifly: tiles.filter((t) => t.value > 0), docker };
 }

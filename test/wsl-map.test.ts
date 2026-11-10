@@ -194,6 +194,89 @@ const MEMINFO = {
 /** MemTotal leaves 1.11 GiB unaccounted beside slab, page tables and stacks: 1.0 once vmalloc is named. */
 const LINUX: VmLinux = { memTotal: (10.53 + 12.02 + 1.645 + 1.11 + 0.41) * GIB, meminfo: MEMINFO };
 
+describe("session tools, split by program", () => {
+  const MIB = 2 ** 20;
+  const tool = (rss: number, argv: string[], comm = argv[0] ?? "x"): Proc => {
+    next += 1;
+    return { pid: next, ppid: 1, comm, argv, rss, cpu: 0, read: 0, write: 0 };
+  };
+  const toolsOf = (list: Proc[], pss = new Map<number, number>()) => {
+    const kinds = new Map<number, Kind>(list.map((p) => [p.pid, "tools"]));
+    return find(inVmOf(list, kinds, pss, [], []).prifly, "wsl:prifly:tools");
+  };
+  const gate = (rss: number) => tool(rss, ["bun", "/w/gate/cli.ts", "--cores", "2"], "bun");
+  const BIG = [
+    ...Array.from({ length: 3 }, () => gate(75 * MIB)),
+    tool(1600 * MIB, ["node", "/n/typescript/bin/tsc", "--build"], "node"),
+    ...Array.from({ length: 2 }, () => tool(200 * MIB, ["bun", "test", "--test-worker"], "bun")),
+    ...Array.from({ length: 4 }, () => tool(30 * MIB, ["zsh"])),
+    tool(300 * MIB, ["node", "/m/singlefile-build.mjs"], "node"),
+  ];
+
+  test("one child per program, named by what it is, keys stable", () => {
+    const t = toolsOf(BIG);
+    expect(t?.name).toBe("Session tools ×11");
+    const names = Object.fromEntries((t?.children ?? []).map((c) => [c.key, c.name]));
+    expect(names).toEqual({
+      "wsl:prifly:tools:tsc": "tsc",
+      "wsl:prifly:tools:builds": "Builds",
+      "wsl:prifly:tools:bun-test": "bun test ×2",
+      "wsl:prifly:tools:gates": "Test gates waiting/running ×3",
+      "wsl:prifly:tools:shells": "Shells ×4",
+    });
+    expect(total(t?.children)).toBe(t?.value ?? -1);
+    expect((t?.children ?? []).every((c) => c.why !== "")).toBe(true);
+  });
+
+  test("the agent-built gate runner is a gate too", () => {
+    const runner = tool(75 * MIB, ["prifly-agent", "/a/runners/r-ab12/cli.js"]);
+    const gates = find(toolsOf([...BIG, runner])?.children, "wsl:prifly:tools:gates");
+    expect(gates?.name).toBe("Test gates waiting/running ×4");
+  });
+
+  test("programs under 2 % fold into Other, with their count", () => {
+    const t = toolsOf([...BIG, tool(MIB, ["sleep", "5"]), tool(MIB, ["tail", "-f", "x"])]);
+    const other = find(t?.children, "wsl:prifly:tools:other");
+    expect(other?.name).toBe("Other ×2");
+    expect(gib(other?.value)).toBe(gib(2 * MIB));
+    expect(t?.name).toBe("Session tools ×13");
+    expect(find(t?.children, "wsl:prifly:tools:p-sleep")).toBeUndefined();
+  });
+
+  test("one small program alone keeps its own tile", () => {
+    const t = toolsOf([...BIG, tool(MIB, ["sleep", "5"])]);
+    expect(find(t?.children, "wsl:prifly:tools:other")).toBeUndefined();
+    expect(find(t?.children, "wsl:prifly:tools:p-sleep")?.name).toBe("sleep");
+  });
+
+  test("under two children the tile stays whole", () => {
+    const t = toolsOf([tool(40 * MIB, ["zsh"]), tool(60 * MIB, ["zsh"])]);
+    expect(t?.children).toBeUndefined();
+    expect(t?.name).toBe("Session tools ×2");
+    expect(t?.value).toBe(100 * MIB);
+  });
+
+  test("PSS where it was read, RSS where not, and the parent says how many", () => {
+    const a = tool(100 * MIB, ["pytest"]);
+    const b = tool(100 * MIB, ["zsh"]);
+    const t = toolsOf([a, b], new Map([[a.pid, 40 * MIB]]));
+    expect(find(t?.children, "wsl:prifly:tools:pytest")?.value).toBe(40 * MIB);
+    expect(find(t?.children, "wsl:prifly:tools:shells")?.value).toBe(100 * MIB);
+    expect(t?.value).toBe(140 * MIB);
+    expect(t?.why).toMatch(/1 of 2 count per process \(RSS\)/);
+    expect(toolsOf([a, b])?.why).toMatch(/smaps_rollup could not be read/);
+    expect(
+      toolsOf(
+        [a, b],
+        new Map([
+          [a.pid, 1],
+          [b.pid, 1],
+        ]),
+      )?.why,
+    ).toMatch(/PSS, from/);
+  });
+});
+
 describe("the Linux kernel, split by what /proc/meminfo names", () => {
   const kernel = find(wslParts(LINUX, null, null), "wsl:kernel");
 
