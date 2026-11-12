@@ -7,6 +7,8 @@ import {
   memoryStat,
   ownerOf,
   parseCpuStat,
+  parseStats,
+  statsReadingOf,
 } from "../docker";
 import type { McpConfig } from "../mcp";
 import { priflyReport } from "../prifly";
@@ -171,4 +173,34 @@ test("a session's containers count in its row, the rest beside prifly", () => {
   expect(report.otherContainers.cpu).toBe(4);
   expect(report.containerCount).toEqual({ sessions: 1, other: 2 });
   expect(report.total.cpu).toBe(2);
+});
+
+describe("Docker's stats, where the cgroups are out of sight", () => {
+  const stats = (id: string, ns: number) => ({
+    id,
+    read: "2026-11-12T11:56:54.571Z",
+    cpu_stats: { cpu_usage: { total_usage: ns } },
+    memory_stats: { usage: 12000, stats: { anon: 3000, inactive_file: 4000 } },
+  });
+
+  test("a container is counted as its cgroup's files count it", () => {
+    expect(statsReadingOf(stats("c", 5000))).toEqual({
+      id: "c",
+      usage: 5,
+      memory: 8000,
+      anon: 3000,
+    });
+  });
+
+  test("a container that stopped is left out", () => {
+    expect(statsReadingOf({ id: "c", read: "0001-01-01T00:00:00Z" })).toBeNull();
+  });
+
+  test("the shell's output is one answer a line", () => {
+    const out = `${JSON.stringify(stats("a", 1000))}\r\n${JSON.stringify(stats("b", 2000))}\n`;
+    const snapshot = parseStats(out, 7);
+    expect(snapshot.at).toBe(7);
+    expect([...snapshot.containers.keys()]).toEqual(["a", "b"]);
+    expect(() => parseStats("curl: not found\n", 7)).toThrow("curl: not found");
+  });
 });

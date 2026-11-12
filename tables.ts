@@ -14,7 +14,10 @@ import {
   type ContainerSnapshot,
   containerInfos,
   DOCKER_INSPECT,
+  DOCKER_STATS,
   parseInspect,
+  parseStats,
+  readContainerStats,
   readContainers,
 } from "./docker";
 import { type ProcSnapshot, readProcs } from "./procs";
@@ -26,6 +29,12 @@ import { PROCS_READ, parseProcsRead, type WslLinux } from "./wsl-exe";
 
 /** Containers' names and mounts change only when one starts or stops. */
 const DOCKER_EVERY = 10_000;
+/**
+ * Where the cgroups show no container, Docker's stats are asked this often
+ * while some run, and this much more seldom while none does or Docker does not answer.
+ */
+const STATS_EVERY = 2_000;
+const STATS_IDLE = 10_000;
 /** The longest a read through WSL may take; one that takes longer ends the shell, and WSL counts as gone. */
 const WSL_TIMEOUT = 10_000;
 /** The `claude` processes' PSS walks their page tables: at most this often. */
@@ -75,6 +84,11 @@ export class Tables {
   /** Counts `clearPss` calls: a read through WSL that lands after one is dropped. */
   private pssGeneration = 0;
   private dockerAt = 0;
+  /** When Docker's stats may be asked next, and whether they are being read. */
+  private statsNext = 0;
+  private statsReading = false;
+  /** Whether the last stats read failed: logged only when it starts failing. */
+  private statsFailing = false;
   private procsReading = false;
   /** Whether the early second reading of the host's processes was asked for since the window opened. */
   private windowsHostEarly = false;
@@ -96,7 +110,7 @@ export class Tables {
     const wsl = this.deps.wsl;
     if (wsl === null) {
       keep(this.procs, readProcs(), seconds);
-      this.keepContainers(readContainers(), seconds, now);
+      this.keepCgroups(readContainers(), wsl, seconds, now);
       return;
     }
     this.readThroughWsl(wsl, seconds, true);
@@ -164,6 +178,7 @@ export class Tables {
     // The window opens again (or the gap ended): the first reading is `topProcesses`', and the second follows soon.
     this.windowsHostEarly = false;
     this.windowsHostLive.clear();
+    this.statsNext = 0;
     this.clearPss();
   }
 
@@ -171,6 +186,7 @@ export class Tables {
   clearWsl(): void {
     this.procs.length = 0;
     this.containers.length = 0;
+    this.statsNext = 0;
     this.clearPss();
   }
 
@@ -178,6 +194,43 @@ export class Tables {
   stop(): void {
     this.stopped = true;
     this.windowsHostLive.stop();
+  }
+
+  /**
+   * The containers from their cgroups; where those show none, from Docker's
+   * stats instead (`readContainerStats`), which see past WSL's per-distro cgroup namespace.
+   */
+  private keepCgroups(
+    containers: ContainerSnapshot,
+    wsl: WslLinux | null,
+    seconds: number,
+    now: number,
+  ): void {
+    if (containers.containers.size > 0) {
+      this.keepContainers(containers, seconds, now);
+      return;
+    }
+    if (this.statsReading || now < this.statsNext) return;
+    this.statsReading = true;
+    const read =
+      wsl === null
+        ? readContainerStats()
+        : wsl.run(DOCKER_STATS, WSL_TIMEOUT).then((out) => parseStats(out, Date.now()));
+    read
+      .then((found) => {
+        this.statsFailing = false;
+        this.statsNext = Date.now() + (found.containers.size > 0 ? STATS_EVERY : STATS_IDLE);
+        if (this.stopped || (wsl !== null && wsl.absent !== "")) return;
+        this.keepContainers(found, seconds, Date.now());
+      })
+      .catch((error: unknown) => {
+        this.statsNext = Date.now() + STATS_IDLE;
+        if (!this.statsFailing) this.deps.log("docker_stats_failed", { error: String(error) });
+        this.statsFailing = true;
+      })
+      .finally(() => {
+        this.statsReading = false;
+      });
   }
 
   private keepContainers(containers: ContainerSnapshot, seconds: number, now: number): void {
@@ -214,7 +267,7 @@ export class Tables {
         // WSL went while it read: what it read says nothing about now.
         if (wsl.absent !== "" || this.stopped) return;
         keep(this.procs, read.procs, seconds);
-        if (containers) this.keepContainers(read.containers, seconds, Date.now());
+        if (containers) this.keepCgroups(read.containers, wsl, seconds, Date.now());
       })
       .catch((error: unknown) => {
         if (wsl.absent === "") this.deps.log("wsl_procs_failed", { error: String(error) });

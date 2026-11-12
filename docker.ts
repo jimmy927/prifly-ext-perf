@@ -229,3 +229,84 @@ export function parseInspect(out: string): Map<string, ContainerInfo> {
   }
   return infos;
 }
+
+/** The part of Docker's one-shot `GET /containers/<id>/stats` this reads. */
+export type ApiStats = {
+  id: string;
+  read?: string;
+  cpu_stats?: { cpu_usage?: { total_usage?: number } };
+  memory_stats?: { usage?: number; stats?: Record<string, number> };
+};
+
+/**
+ * One container from Docker's stats, counted as its cgroup's files are
+ * (`containerReadingOf`); null for one that stopped (Docker answers with a zero time).
+ */
+export function statsReadingOf(stats: ApiStats): ContainerReading | null {
+  if (stats.read === undefined || stats.read.startsWith("0001-")) return null;
+  const memory = stats.memory_stats ?? {};
+  const fields = memory.stats ?? {};
+  return {
+    id: stats.id,
+    // Docker gives nanoseconds; the cgroup's `usage_usec` is microseconds.
+    usage: (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) / 1000,
+    memory: Math.max(0, (memory.usage ?? 0) - (fields["inactive_file"] ?? 0)),
+    anon: fields["anon"] ?? 0,
+  };
+}
+
+function snapshotOf(all: ApiStats[], at: number): ContainerSnapshot {
+  const containers = new Map<string, ContainerReading>();
+  for (const stats of all) {
+    const one = statsReadingOf(stats);
+    if (one !== null) containers.set(one.id, one);
+  }
+  return { at, containers };
+}
+
+/**
+ * Every running container's counters from Docker's API, for where its cgroups
+ * are out of sight: WSL gives each distro a cgroup namespace of its own, and
+ * Docker Desktop's containers are in another one. Rejects where there is no Docker to ask.
+ */
+export async function readContainerStats(): Promise<ContainerSnapshot> {
+  const get = async (path: string) => {
+    const response = await fetch(`http://docker${path}`, {
+      unix: socketPath(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`Docker answered ${response.status} to ${path}`);
+    return response.json();
+  };
+  const list = (await get("/containers/json")) as ApiContainer[];
+  const all = await Promise.all(
+    list.map((api) => get(`/containers/${api.Id}/stats?stream=false&one-shot=true`)),
+  );
+  return snapshotOf(all as ApiStats[], Date.now());
+}
+
+/**
+ * The same through the shell inside WSL, for a host on Windows itself: one
+ * stats answer per line, each container asked at once into a file of its own
+ * so that no two answers mix. Prints nothing where there is no Docker.
+ */
+export const DOCKER_STATS =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, not a template
+  's="${DOCKER_HOST#unix://}"; [ -S "$s" ] || s=/var/run/docker.sock; d=$(mktemp -d) && ' +
+  "{ docker ps -q --no-trunc 2>/dev/null | xargs -r -P 16 -I{} curl -sf --max-time 5 " +
+  `--unix-socket "$s" -o "$d/{}" 'http://docker/containers/{}/stats?stream=false&one-shot=true'; ` +
+  'cat "$d"/* 2>/dev/null; rm -rf "$d"; }';
+
+/** What `DOCKER_STATS` printed; a line that is not JSON is an error, with that line. */
+export function parseStats(out: string, at: number): ContainerSnapshot {
+  const all: ApiStats[] = [];
+  for (const line of out.replace(/\r/g, "").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      all.push(JSON.parse(line) as ApiStats);
+    } catch {
+      throw new Error(`docker stats in WSL: ${line.slice(0, 200)}`);
+    }
+  }
+  return snapshotOf(all, at);
+}
