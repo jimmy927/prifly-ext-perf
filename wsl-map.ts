@@ -2,9 +2,10 @@
 // (`memory-map.ts` draws it): its file cache, prifly's processes, Docker's
 // containers, every other program, the kernel, what is free, and what the VM
 // costs Windows beyond Linux's memory. From `/proc/meminfo` (`wsl.ts`), the
-// prifly report and Docker's cgroups. prifly's part and the kernel's are
-// groups: prifly's by the containers its sessions started, their `claude`
-// (by PSS, `pss.ts`), the agent and relays and the sessions' tools; the
+// prifly report and Docker's counters. prifly's part, Docker's and the
+// kernel's are groups: prifly's by their `claude` (by PSS, `pss.ts`), the
+// agent and relays and the sessions' tools; Docker's by container, each named
+// with the session that started it (Docker's distro is in the same VM); the
 // kernel's by what `/proc/meminfo` names of it.
 //
 // Windows does not say which of the VM's pages it trimmed, so each part is in
@@ -22,12 +23,11 @@ import type { LinuxSample } from "./wsl";
 export type VmLinux = Pick<LinuxSample, "memTotal" | "meminfo">;
 
 /**
- * Bytes in the VM: prifly's, as the tiles of its group (`priflyTiles`: the
- * containers its sessions started, their `claude`, the agent and relays, the
- * sessions' tools), and the other containers' anon memory (`memory.stat`),
- * without their file cache.
+ * Bytes in the VM, as the tiles of two groups: prifly's (the sessions'
+ * `claude`, the agent and relays, the sessions' tools) and Docker's, one
+ * tile per container by its anon memory (`memory.stat`), without its file cache.
  */
-export type InVm = { prifly: Tile[]; docker: number };
+export type InVm = { prifly: Tile[]; docker: Tile[] };
 
 /** The WSL VM's tile once it is split; `share` is the VM's in-RAM share. */
 const splitWhy = (share: number) =>
@@ -46,11 +46,12 @@ const PART_WHY = {
     "it is promised, and Windows trims and compresses it. autoMemoryReclaim=dropCache in .wslconfig " +
     "is meant to hand it back to Windows.",
   prifly:
-    "What prifly's sessions run inside WSL: the containers a session started, each session's " +
-    "claude, prifly's agent and relays, and the MCP servers and tools their turns run.",
+    "What prifly's sessions run inside WSL: each session's claude, prifly's agent and relays, and " +
+    "the MCP servers and tools their turns run. The containers a session started are Docker's.",
   docker:
-    "Containers Docker runs in the VM that no session started: their processes' own memory, from " +
-    "their cgroups. Their file cache is in the Linux file cache.",
+    "Every container Docker runs: Docker Desktop's distro is in the same VM, on the same kernel, " +
+    "so its memory is the VM's. Each container's processes' own memory, its file cache in the " +
+    "Linux file cache. A container a session started carries that session's name.",
   other:
     "Every other process in the VM: its own memory (AnonPages and Shmem) less prifly's and Docker's.",
   programs:
@@ -139,9 +140,9 @@ function byTile(procs: readonly Proc[], kinds: ReadonlyMap<number, Kind>) {
 }
 
 /**
- * prifly's part of the VM as tiles, and the other containers' anon memory:
- * the containers its sessions (`sessions`, the report's) started, one each by
- * their anon memory; the `claude` processes the report counted (`kinds`, from
+ * prifly's and Docker's parts of the VM as tiles. Docker's: every container,
+ * by its anon memory, named with the session (`sessions`, the report's) that
+ * started it where one did. prifly's: the `claude` processes the report counted (`kinds`, from
  * `priflyReport`), by PSS where `pss` has it and RSS where not; the agent and
  * relays (with a host inside WSL, the host and its helpers); the MCP servers;
  * and the sessions' tools and runners. A tile of 0 is left out.
@@ -154,25 +155,25 @@ export function inVmOf(
   sessions: readonly SessionRow[],
 ): InVm {
   const rows = new Map(sessions.map((row) => [row.id, row]));
-  const tiles: Tile[] = [];
-  let docker = 0;
-  for (const container of containers) {
+  const docker = containers.map((container): Tile => {
     const row = rows.get(container.session);
+    const key = `wsl:docker:${container.id.slice(0, 12)}`;
+    const value = bytesOf(container.anon);
+    const own = "its processes' own memory (anon in its memory.stat), not its file cache.";
     if (row === undefined) {
-      docker += bytesOf(container.anon);
-      continue;
+      const why = `A container no session started: ${own}`;
+      return { key, name: container.name, colour: "k-docker", value, why };
     }
     const session = sessionName(row);
-    tiles.push({
-      key: `wsl:prifly:c:${container.id.slice(0, 12)}`,
+    return {
+      key,
       name: `${container.service ?? container.name} · ${session}`,
       colour: "k-docker",
-      value: bytesOf(container.anon),
-      why:
-        `A container the session ${session} started (${container.name}): its processes' own ` +
-        "memory (anon in its cgroup's memory.stat), not its file cache. Stopping that stack frees it.",
-    });
-  }
+      value,
+      why: `A container the session ${session} started (${container.name}): ${own} Stopping that stack frees it.`,
+    };
+  });
+  const tiles: Tile[] = [];
   const by = byTile(procs, kinds);
   const rss = (list: Proc[]) => list.reduce((s, p) => s + bytesOf(p.rss), 0);
   const claudeRss = rss(by.claude);
@@ -214,7 +215,10 @@ export function inVmOf(
       ? { ...toolsTile, value: tools.value }
       : group(toolsTile, tools.children),
   );
-  return { prifly: tiles.filter((t) => t.value > 0), docker };
+  return {
+    prifly: tiles.filter((t) => t.value > 0),
+    docker: docker.filter((t) => t.value > 0).sort((a, b) => b.value - a.value),
+  };
 }
 
 /** `tiles` and their children, each value times `by`. */
@@ -297,7 +301,8 @@ export function wslParts(linux: VmLinux, inVm: InVm | null, commit: number | nul
   const programs = bytesOf(m.anonPages) + bytesOf(m.shmem);
   const priflyWhole = inVm === null ? 0 : sum(inVm.prifly);
   const prifly = Math.min(priflyWhole, programs);
-  const docker = inVm === null ? 0 : Math.min(bytesOf(inVm.docker), programs - prifly);
+  const dockerWhole = inVm === null ? 0 : sum(inVm.docker);
+  const docker = Math.min(dockerWhole, programs - prifly);
   const free = bytesOf(m.memFree);
   const kernelOwn = bytesOf(m.slab) + bytesOf(m.pageTables) + bytesOf(m.kernelStack);
   const kernel = kernelTile(
@@ -314,6 +319,8 @@ export function wslParts(linux: VmLinux, inVm: InVm | null, commit: number | nul
   });
   const priflyChildren =
     inVm === null || !(priflyWhole > 0) ? [] : scaled(inVm.prifly, prifly / priflyWhole);
+  const dockerChildren =
+    inVm === null || !(dockerWhole > 0) ? [] : scaled(inVm.docker, docker / dockerWhole);
   return [
     part("cache", "Linux file cache", "k-cache", cache),
     priflyChildren.length === 0
@@ -322,7 +329,17 @@ export function wslParts(linux: VmLinux, inVm: InVm | null, commit: number | nul
           { key: "wsl:prifly", name: "prifly sessions", colour: "k-claude", why: PART_WHY.prifly },
           priflyChildren,
         ),
-    part("docker", "Docker containers", "k-docker", docker),
+    dockerChildren.length === 0
+      ? part("docker", "Docker", "k-docker", docker)
+      : group(
+          {
+            key: "wsl:docker",
+            name: counted("Docker", dockerChildren.length),
+            colour: "k-docker",
+            why: PART_WHY.docker,
+          },
+          dockerChildren,
+        ),
     inVm === null
       ? part("programs", "Linux programs", "k-other", programs)
       : part("other", "Other Linux programs", "k-other", programs - prifly - docker),

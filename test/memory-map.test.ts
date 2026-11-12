@@ -310,7 +310,11 @@ describe("the WSL VM split by what Linux holds", () => {
   const priflyOf = (value: number): Tile[] => [
     { key: "wsl:prifly:claude", name: "claude", colour: "k-claude", value, why: "" },
   ];
-  const IN_VM = { prifly: priflyOf(3.2 * GIB), docker: 3.9 * GIB };
+  /** Docker's part as one container (wsl-map.test.ts names them). */
+  const dockerOf = (value: number): Tile[] => [
+    { key: "wsl:docker:aaaaaaaaaaaa", name: "loki", colour: "k-docker", value, why: "" },
+  ];
+  const IN_VM = { prifly: priflyOf(3.2 * GIB), docker: dockerOf(3.9 * GIB) };
   /** The VM as Windows saw it the same day: 23.92 GiB committed, 8.1 GiB of it in RAM. */
   const VM: Holder = {
     key: "wsl",
@@ -391,7 +395,7 @@ describe("the WSL VM split by what Linux holds", () => {
 
   test("no Docker running: no Docker part", () => {
     const children = find(
-      live({ inVm: { prifly: priflyOf(3.2 * GIB), docker: 0 } }).commit,
+      live({ inVm: { prifly: priflyOf(3.2 * GIB), docker: [] } }).commit,
       "wsl",
     )?.children;
     expect(keys(children ?? [])).not.toContain("wsl:docker");
@@ -405,7 +409,10 @@ describe("the WSL VM split by what Linux holds", () => {
       meminfo: { ...LINUX.meminfo, buffers: 0, cached: 0.01 * GIB, anonPages: Number.NaN },
     };
     // prifly and Docker counted more than Linux says programs hold.
-    const map = live({ linux: odd, inVm: { prifly: priflyOf(30 * GIB), docker: 30 * GIB } });
+    const map = live({
+      linux: odd,
+      inVm: { prifly: priflyOf(30 * GIB), docker: dockerOf(30 * GIB) },
+    });
     const all = [...every(map.commit), ...every(map.ram)];
     for (const t of all) {
       expect(Number.isFinite(t.value)).toBe(true);

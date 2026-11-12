@@ -76,20 +76,28 @@ const CONTAINERS = [
 describe("prifly sessions, split by what they run", () => {
   const vm = inVmOf(PROCS, KINDS, PSS, CONTAINERS, SESSIONS);
 
-  test("a container a session started is named by its service and its session", () => {
-    const es = find(vm.prifly, `wsl:prifly:c:${"a".repeat(12)}`);
+  test("a container a session started is Docker's, named by its service and its session", () => {
+    const es = find(vm.docker, `wsl:docker:${"a".repeat(12)}`);
     expect(es?.name).toBe("elasticsearch · skapa-mojlighet-att-bygga-en-candidate");
     expect(gib(es?.value)).toBe(4.55);
     expect(es?.why).toMatch(/odi-elasticsearch-1/);
   });
 
   test("a container whose session has no title is named by its folder", () => {
-    expect(find(vm.prifly, `wsl:prifly:c:${"b".repeat(12)}`)?.name).toBe("redis · fix-login");
+    expect(find(vm.docker, `wsl:docker:${"b".repeat(12)}`)?.name).toBe("redis · fix-login");
   });
 
-  test("a container no session started is Docker's, not prifly's", () => {
-    expect(gib(vm.docker)).toBe(0.2);
-    expect(vm.prifly.map((t) => t.name).join()).not.toMatch(/loki/);
+  test("a container no session started is Docker's by its name alone", () => {
+    expect(find(vm.docker, `wsl:docker:${"c".repeat(12)}`)?.name).toBe("loki");
+  });
+
+  test("every container is Docker's, the biggest first, and none is prifly's", () => {
+    expect(vm.docker.map((t) => t.name)).toEqual([
+      "elasticsearch · skapa-mojlighet-att-bygga-en-candidate",
+      "loki",
+      "redis · fix-login",
+    ]);
+    expect(vm.prifly.map((t) => t.key).join()).not.toMatch(/docker/);
   });
 
   test("the claude processes count by PSS, and the tile says what RSS was", () => {
@@ -107,8 +115,8 @@ describe("prifly sessions, split by what they run", () => {
   });
 
   test("what the report did not count is in no tile", () => {
-    // 4.55 + 0.1 + 4.0 + 0.7 + 0.2 + 0.3: the sshd's 1 GB is not among them.
-    expect(gib(total(vm.prifly))).toBe(9.85);
+    // 4.0 + 0.7 + 0.2 + 0.3: the sshd's 1 GB is not among them, the containers are Docker's.
+    expect(gib(total(vm.prifly))).toBe(5.2);
   });
 
   test("no smaps_rollup read: RSS, and the claude tile says so", () => {
@@ -133,7 +141,7 @@ describe("prifly sessions, split by what they run", () => {
   });
 
   test("before the process table is read there is nothing to split", () => {
-    expect(inVmOf([], new Map(), new Map(), [], [])).toEqual({ prifly: [], docker: 0 });
+    expect(inVmOf([], new Map(), new Map(), [], [])).toEqual({ prifly: [], docker: [] });
   });
 
   test("the report says which kind it counted each process as", () => {
@@ -367,6 +375,13 @@ describe("the groups in the WSL VM's tile", () => {
     const prifly = find(wslParts(small, inVm, null), "wsl:prifly");
     expect(gib(prifly?.value)).toBe(5.02);
     expect(prifly?.value).toBeCloseTo(total(prifly?.children), 0);
+  });
+
+  test("Docker is a group of its containers beside prifly's, in the VM", () => {
+    const docker = find(splitWsl(VM, LINUX, inVm).children, "wsl:docker");
+    expect(docker?.name).toBe("Docker ×3");
+    expect(docker?.value).toBeCloseTo(total(docker?.children), 0);
+    expect(docker?.children?.[0]?.key).toBe(`wsl:docker:${"a".repeat(12)}`);
   });
 
   test("before the process table is read: no prifly or container children", () => {
