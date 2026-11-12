@@ -67,6 +67,16 @@ table.matrix th {
 table.matrix tbody tr.p td:first-child {
   font-weight: 600;
 }
+/* A container under the Docker row: indented past its swatch, closer set. */
+table.matrix tbody tr.container td {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 12px;
+}
+table.matrix tbody tr.container td:first-child {
+  padding-left: 30px;
+  color: var(--muted-fg);
+}
 table.matrix td.none {
   color: var(--muted-fg);
   font-size: 12px;

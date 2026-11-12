@@ -57,6 +57,11 @@ export type PriflyReport = {
   mcp: McpRow[];
   /** Containers no running session started: outside prifly, like other programs. */
   otherContainers: Usage;
+  /**
+   * Every container, busiest first, with the title of the session that started
+   * it ("" for none): the Where it goes card counts Docker whole, whoever started it.
+   */
+  docker: { name: string; session: string; cpu: number; rss: number }[];
   /** How many containers each side has; their processes are not counted, as Docker hides them. */
   containerCount: { sessions: number; other: number };
   /** What no session owns, by what it is for: the parts of `total` the sessions leave. */
@@ -508,7 +513,15 @@ function readReport(
   );
   const mcp = [...acc.mcp.values()].sort((a, b) => b.processes - a.processes);
   const byCpu = sessions.sort((a, b) => b.cpu - a.cpu);
-  return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount, own };
+  const docker = containers
+    .map((container) => ({
+      name: container.name,
+      session: rows.get(container.session)?.title ?? "",
+      cpu: container.cpu,
+      rss: container.memory,
+    }))
+    .sort((a, b) => b.cpu - a.cpu || b.rss - a.rss);
+  return { total, kinds, sessions: byCpu, mcp, otherContainers, docker, containerCount, own };
 }
 
 /**

@@ -1,6 +1,6 @@
 // The "Where it goes" card at the top of the Machine tab: CPU and memory over
 // the whole machine, each split into Windows and the WSL VM, and in each what
-// is prifly's, what is Docker's and what is everything else.
+// is prifly's, what is Docker's (each container too) and what is everything else.
 
 import { $, bytes, cores, el } from "./format.js";
 
@@ -40,8 +40,29 @@ function split(total, win, wsl, priflyKnown) {
   return { total, win: winGroup, wsl: vmGroup };
 }
 
+/**
+ * Docker counted whole, whoever started each container, and prifly's sessions
+ * without the containers they started: `{prifly, docker}` as `{cpu, rss}`.
+ */
+function vmParts(state) {
+  const report = state.prifly;
+  if (report === null) return { prifly: { cpu: 0, rss: 0 }, docker: { cpu: 0, rss: 0 } };
+  const docker = report.docker.reduce(
+    (sum, c) => ({ cpu: sum.cpu + c.cpu, rss: sum.rss + c.rss }),
+    {
+      cpu: 0,
+      rss: 0,
+    },
+  );
+  const mine = report.kinds.containers;
+  return {
+    prifly: { cpu: report.total.cpu - mine.cpu, rss: report.total.rss - mine.rss },
+    docker,
+  };
+}
+
 /** The CPU split: cores, by the hypervisor's count of the machine where Windows has one. */
-function cpuSplit(c, info, s, report, mine) {
+function cpuSplit(c, info, s, report, mine, parts) {
   const winCpu = Math.min(info.cores, ((c.machine ?? c.busy ?? 0) / 100) * info.cores);
   if (s === null)
     return split(info.cores, { used: winCpu, vm: 0, prifly: mine?.cpu ?? 0 }, null, true);
@@ -51,8 +72,8 @@ function cpuSplit(c, info, s, report, mine) {
   const wsl = {
     size: wslCpu,
     used: wslCpu,
-    prifly: report?.total.cpu ?? 0,
-    docker: report?.otherContainers.cpu ?? 0,
+    prifly: parts.prifly.cpu,
+    docker: parts.docker.cpu,
   };
   return split(
     info.cores,
@@ -67,7 +88,7 @@ function cpuSplit(c, info, s, report, mine) {
  * it in RAM (its working set), not its whole size; where that counter is missing,
  * what Linux uses in the VM stands in for it.
  */
-function memorySplit(c, info, s, report, mine) {
+function memorySplit(c, info, s, report, mine, parts) {
   const winMem = Math.max(0, info.memTotal - (c.availableMB ?? 0) * MIB);
   const vm = c.wslVmMem ?? (s === null ? 0 : s.memTotal - s.memAvailable);
   const win = { used: winMem, vm, prifly: mine?.rss ?? 0 };
@@ -77,8 +98,8 @@ function memorySplit(c, info, s, report, mine) {
       : {
           size: s.memTotal,
           used: s.memTotal - s.memAvailable,
-          prifly: report?.total.rss ?? 0,
-          docker: report?.otherContainers.rss ?? 0,
+          prifly: parts.prifly.rss,
+          docker: parts.docker.rss,
         };
   return split(info.memTotal, win, wsl, report !== null);
 }
@@ -130,8 +151,9 @@ export function whereModel(state) {
   // prifly's own Windows processes, where the host reads them.
   const mine = state.priflyWindows ?? null;
   const others = state.others ?? { linux: [], windows: [] };
-  const cpu = cpuSplit(counters, info, s, report, mine);
-  const memory = memorySplit(counters, info, s, report, mine);
+  const parts = vmParts(state);
+  const cpu = cpuSplit(counters, info, s, report, mine, parts);
+  const memory = memorySplit(counters, info, s, report, mine, parts);
   named(cpu, others, "cpu");
   named(memory, others, "rss");
   return {
@@ -141,6 +163,7 @@ export function whereModel(state) {
     memory,
     running: s !== null,
     known: report !== null,
+    containers: report?.docker ?? [],
   };
 }
 
@@ -187,7 +210,13 @@ const programs = (part) =>
       : `${name}: ${bytes(value)} in RAM · ${bytes(commit)} committed by all its processes`,
   ]);
 
-function row(label, r, format, known) {
+/** The Docker segment's tooltip: its total, then its busiest containers by `key`. */
+function dockerTitle(total, containers, key, format) {
+  const top = [...containers].sort((a, b) => b[key] - a[key]).slice(0, 8);
+  return [`Docker: ${format(total)}`, ...top.map((c) => `${c.name}: ${format(c[key])}`)].join("\n");
+}
+
+function row(label, r, format, known, containers, key) {
   const prifly = r.win.prifly + (r.wsl?.prifly ?? 0);
   const free = r.win.free + (r.wsl?.free ?? 0);
   const groups = [
@@ -216,7 +245,7 @@ function row(label, r, format, known) {
         r.total,
         [
           ["k-claude", "prifly sessions", r.wsl.prifly],
-          ["k-docker", "Docker", r.wsl.docker],
+          ["k-docker", "Docker", r.wsl.docker, dockerTitle(r.wsl.docker, containers, key, format)],
           ...programs(r.wsl),
           ["k-other", known ? "Other WSL" : "In use", r.wsl.rest],
           ["k-vmfree", "free in VM", r.wsl.free],
@@ -250,10 +279,11 @@ function matrix(m) {
   // Until prifly's table is read, WSL's part of it cannot be told from the rest.
   const wsl =
     cpu.wsl === null || !m.known
-      ? { prifly: null, other: null }
+      ? { prifly: null, docker: null, other: null }
       : {
           prifly: [cpu.wsl.prifly, memory.wsl.prifly],
-          other: [cpu.wsl.docker + cpu.wsl.other, memory.wsl.docker + memory.wsl.other],
+          docker: [cpu.wsl.docker, memory.wsl.docker],
+          other: [cpu.wsl.other, memory.wsl.other],
         };
   const wslCell = (both) => {
     if (!m.running) return el("td", { class: "r none" }, "not running");
@@ -264,10 +294,37 @@ function matrix(m) {
     if (!m.running) return cell(w);
     return v === null ? NONE() : cell([w[0] + v[0], w[1] + v[1]]);
   };
-  const docker =
-    m.running && m.known
-      ? `of which Docker ${cores(cpu.wsl.docker)} · ${bytes(memory.wsl.docker)}`
-      : "";
+  const started = m.containers.filter((c) => c.session !== "").length;
+  const dockerNote =
+    m.containers.length === 0
+      ? ""
+      : `${m.containers.length} containers${started > 0 ? ` · ${started} started by sessions` : ""}`;
+  // Docker runs in the VM alone: nothing of it is Windows'.
+  const dockerRows =
+    !m.running || !m.known
+      ? []
+      : [
+          el(
+            "tr",
+            {},
+            el("td", {}, el("i", { class: "swatch k-docker" }), "Docker"),
+            el("td", { class: "r none" }, "—"),
+            cell(wsl.docker),
+            cell(wsl.docker),
+            el("td", { class: "r none" }, dockerNote),
+          ),
+          ...m.containers.map((c) =>
+            el(
+              "tr",
+              { class: "container" },
+              el("td", {}, c.name),
+              el("td"),
+              cell([c.cpu, c.rss]),
+              el("td"),
+              el("td", { class: "r none" }, c.session),
+            ),
+          ),
+        ];
   return [
     el(
       "tr",
@@ -278,6 +335,7 @@ function matrix(m) {
       machine(win.prifly, wsl.prifly),
       el("td", { class: "r" }, el("a", { href: "#prifly" }, "Sessions, MCP, tools →")),
     ),
+    ...dockerRows,
     el(
       "tr",
       {},
@@ -285,7 +343,7 @@ function matrix(m) {
       cell(win.other),
       wslCell(wsl.other),
       machine(win.other, wsl.other),
-      el("td", { class: "r none" }, docker),
+      el("td"),
     ),
   ];
 }
@@ -311,8 +369,8 @@ export function drawWhere(state) {
         el(
           "div",
           { class: "where-rows" },
-          row("CPU", m.cpu, cores, m.known),
-          row("Memory", m.memory, bytes, m.known),
+          row("CPU", m.cpu, cores, m.known, m.containers, "cpu"),
+          row("Memory", m.memory, bytes, m.known, m.containers, "rss"),
         ),
         el(
           "table",

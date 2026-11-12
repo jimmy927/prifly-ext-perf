@@ -47,3 +47,28 @@ test("a Windows program's memory segment is its RAM, and carries its commit for 
   // The CPU row names it too, with no commit.
   expect(m.cpu.win.named).toEqual([{ name: "teams", value: expect.any(Number) }]);
 });
+
+test("Docker is counted whole, out of the sessions that started its containers, and named per container", () => {
+  const s = state(7 * GB) as Record<string, unknown>;
+  const use = (cpu: number, rss: number) => ({ processes: 0, cpu, rss, read: 0, write: 0 });
+  s["prifly"] = {
+    total: use(2, 4 * GB),
+    kinds: { containers: use(1, GB) },
+    otherContainers: use(0.5, GB),
+    docker: [
+      { name: "odi-gunicorn-1", session: "odi-46", cpu: 1, rss: GB },
+      { name: "odi-loki-1", session: "", cpu: 0.5, rss: GB },
+    ],
+  };
+  // 4 of the VM's 8 cores busy: room for both.
+  s["linux"] = { sample: { busy: 50, cores: 8, memTotal: 25 * GB, memAvailable: 15 * GB } };
+  const m = whereModel(s);
+  expect(m.cpu.wsl.prifly).toBe(1);
+  expect(m.cpu.wsl.docker).toBe(1.5);
+  expect(m.memory.wsl.prifly).toBe(3 * GB);
+  expect(m.memory.wsl.docker).toBe(2 * GB);
+  expect(m.containers.map((c: { name: string }) => c.name)).toEqual([
+    "odi-gunicorn-1",
+    "odi-loki-1",
+  ]);
+});
