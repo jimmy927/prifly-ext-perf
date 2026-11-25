@@ -38,7 +38,7 @@ export function readPools(current: State, now = Date.now()): void {
   const watching = open(current);
   // Open: only while the page shows pool sizes (a pool counter exists). Shut: only while a pool is over 2 GB.
   if (watching ? latest.poolPaged === null : !over) {
-    // Nothing to read: readings from before a gap say nothing about now.
+    // Nothing to read: what was known of the leak is unknown from here on (the readings stay: live counts carry over a gap).
     current.leaks = { growth: null, holder: null };
     return;
   }

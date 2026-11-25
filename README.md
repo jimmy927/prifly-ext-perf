@@ -181,8 +181,8 @@ itself an hour. If none does, it says *nothing is growing now: an old leak; a
 restart frees it*. When an event-tracing tag (EtwD, Etwr) grows, the headline
 also names the likely holder: a suspended process started over an hour ago
 with at least 100 event-tracing registrations (a suspended app never drains
-the notifications queued for its providers), as *SystemSettings has been
-suspended since 15 Nov holding 639 event-tracing registrations: closing it
+the notifications queued for its providers), as *SystemSettings, started 15
+Nov and now suspended, holds 639 event-tracing registrations: closing it
 should free them.* once, however many pools grow. If a read fails, the text
 is the plain one and the failure is logged.
 

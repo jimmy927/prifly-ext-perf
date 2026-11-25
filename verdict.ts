@@ -192,7 +192,7 @@ function holderNote(holder: EtwHolder): string {
   const since = new Date(holder.since);
   const day = `${since.getDate()} ${MONTHS[since.getMonth()]}`;
   const n = holder.registrations.toLocaleString("en-US");
-  return `${holder.name} has been suspended since ${day} holding ${n} event-tracing registrations: closing it should free them.`;
+  return `${holder.name}, started ${day} and now suspended, holds ${n} event-tracing registrations: closing it should free them.`;
 }
 
 function poolCheck(

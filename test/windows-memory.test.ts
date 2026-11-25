@@ -326,7 +326,7 @@ describe("naming the kernel pool tags that leak", () => {
     expect(headlineOf(pagedOver, { growth: poolGrowth(history), holder: suspended })).toBe(
       "Short of memory in Windows: kernel paged pool 4.1 GB, over 2 GB: growing " +
         "EtwD 1.1 GB (+370 a minute, event tracing), Toke 629 MB (+14 a minute, security tokens). " +
-        "SystemSettings has been suspended since 15 Nov holding 639 event-tracing registrations: closing it should free them.",
+        "SystemSettings, started 15 Nov and now suspended, holds 639 event-tracing registrations: closing it should free them.",
     );
   });
 
@@ -342,11 +342,11 @@ describe("naming the kernel pool tags that leak", () => {
     expect(headlineOf(nonpaged, { growth: poolGrowth(history), holder: suspended })).toBe(
       "Short of memory in Windows: kernel non-paged pool 2.3 GB, over 2 GB: growing " +
         "Etwr 631 MB (+1,100 a minute, event tracing). " +
-        "SystemSettings has been suspended since 15 Nov holding 639 event-tracing registrations: closing it should free them.",
+        "SystemSettings, started 15 Nov and now suspended, holds 639 event-tracing registrations: closing it should free them.",
     );
     const both = { ...calm, poolPaged: 4.1 * GB, poolNonpaged: 2.3 * GB };
     const text = headlineOf(both, { growth: poolGrowth(history), holder: suspended });
-    expect(text.match(/SystemSettings has been suspended/g)).toHaveLength(1);
+    expect(text.match(/SystemSettings, started 15 Nov and now suspended/g)).toHaveLength(1);
     expect(text).toContain("growing Etwr 631 MB (+1,100 a minute, event tracing)");
   });
 

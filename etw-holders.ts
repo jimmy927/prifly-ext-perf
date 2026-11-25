@@ -21,6 +21,7 @@ export type EtwProcess = {
 };
 
 /** The process judged to hold the leak. */
+/** `since` is when the process started (not when it was suspended, which is not read). */
 export type EtwHolder = { name: string; pid: number; registrations: number; since: number };
 
 /** Registrations a process must hold, and how long ago it must have started, to be named. */
