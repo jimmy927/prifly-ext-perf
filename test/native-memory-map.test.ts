@@ -144,6 +144,9 @@ function nativeState(shell: FakeSh, readTimeout: number) {
     topWindowsAt: now,
     pools: null,
     poolsAt: now,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor(
       () => {},
       [],

@@ -37,6 +37,7 @@ import { McpConfig } from "./mcp";
 import { memoryMap } from "./memory-map";
 import { newNannyMemory } from "./nanny";
 import { nannyStep } from "./nanny-step";
+import { readPools } from "./pool-leaks";
 import { pressureOf } from "./pressure";
 import { type Kind, priflyReport, topLinux, type Usage, usageOf } from "./prifly";
 import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
@@ -48,8 +49,10 @@ import {
   headline,
   linuxVerdicts,
   type MemoryCheck,
+  memoryNotes,
   memoryReasons,
   type Place,
+  type PoolLeaks,
   type Tone,
   type Verdicts,
   windowsMemoryChecks,
@@ -65,7 +68,7 @@ import {
   windowsTools,
 } from "./windows";
 import { averageHost } from "./windows-host-live";
-import { compressionGrowth, parsePoolTags, poolTags } from "./windows-memory";
+import { compressionGrowth } from "./windows-memory";
 import { WindowsSampler } from "./windows-sampler";
 import { topProcesses } from "./windows-top";
 import type { LinuxRaw, LinuxSample } from "./wsl";
@@ -84,8 +87,6 @@ const PROCS_KEEP = 310;
 const TOP_WINDOWS_EVERY = 10_000;
 /** Seconds of compression store readings kept: a minute's growth, and some over. */
 const COMPRESSION_KEEP = 300;
-/** The kernel pool tags are read at most this often, and only while the window is open. */
-const POOLS_EVERY = 10_000;
 const CLOUD_EVERY = 5 * 60_000;
 
 let state: State | null = null;
@@ -94,9 +95,10 @@ let state: State | null = null;
 function windowsJudgedOf(
   info: WindowsInfo | null,
   c: WindowsCounters | null,
+  leaks: PoolLeaks | null,
 ): { verdicts: Verdicts; checks: MemoryCheck[] } | null {
   if (c === null || info === null) return null;
-  return { verdicts: windowsVerdicts(c, info), checks: windowsMemoryChecks(c, info) };
+  return { verdicts: windowsVerdicts(c, info), checks: windowsMemoryChecks(c, info, leaks) };
 }
 
 function windowsAverage(current: State, seconds: number, endIndex?: number) {
@@ -118,7 +120,12 @@ function places(
   const out: Place[] = linux === null ? [] : [{ name: linuxName(current), verdicts: linux }];
   if (windows !== null) {
     const why = memoryReasons(windows.checks).map((check) => check.text);
-    out.push({ name: "Windows", verdicts: windows.verdicts, memoryReasons: why });
+    out.push({
+      name: "Windows",
+      verdicts: windows.verdicts,
+      memoryReasons: why,
+      memoryNotes: memoryNotes(windows.checks),
+    });
   }
   return out;
 }
@@ -132,7 +139,8 @@ const ICON_TONE: Record<Tone, Decoration["tone"]> = {
 /** The status-bar item: the Performance button, coloured by the worst of the three. */
 function statusItem(current: State, linux: Verdicts | null): Decoration {
   const windows = windowsAverage(current, CHIP_WINDOW);
-  const judged = places(current, linux, windowsJudgedOf(current.info, windows?.value ?? null));
+  const counters = windows?.value ?? null;
+  const judged = places(current, linux, windowsJudgedOf(current.info, counters, current.leaks));
   const { tone, text } = headline(judged);
   // The first sentence, without the reasons after its colon (whose "4.7 GB" has a dot of its own).
   const label = tone === "good" ? "Fine" : (text.split(/: |\. |\.$/)[0] ?? text);
@@ -214,20 +222,6 @@ export function refreshWhileOpen(current: State): void {
         };
       });
   }
-  const latest = current.windows?.history.at(-1);
-  // Only while the page shows pool sizes: with no pool counter there is no pools line to drill into.
-  if (latest !== undefined && latest.poolPaged !== null && now - current.poolsAt > POOLS_EVERY) {
-    current.poolsAt = now;
-    poolTags()
-      .then((out) => {
-        const tags = parsePoolTags(out);
-        current.pools = { tags, error: tags === null ? "Windows gave no pool tags" : "" };
-      })
-      .catch((error: unknown) => {
-        current.api.log("pool_tags_failed", { error: String(error) });
-        current.pools = { tags: null, error: String(error) };
-      });
-  }
   if (now - current.cloudAt > CLOUD_EVERY) {
     current.cloudAt = now;
     current.api.cloud
@@ -246,6 +240,7 @@ export function refreshWhileOpen(current: State): void {
 /** One second: Linux read when due, and the chip, the nanny and the pace from the last 10 s. Exported for the tests. */
 export function tick(current: State, now = Date.now()): void {
   if (open(current)) hurry(current, now);
+  readPools(current, now);
   if (due(current.linuxAt, current.pace.every, now)) readLinuxNow(current, now);
   // No WSL now: what was kept is from before the gap, and says nothing about now.
   if (current.wsl !== null && current.wsl.absent !== "") {
@@ -312,6 +307,9 @@ export function activate(api: ExtensionApi): () => void {
     topWindowsAt: 0,
     pools: null,
     poolsAt: 0,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
     cloud: null,
     cloudAt: 0,
@@ -497,7 +495,7 @@ export function status(current: State, seconds: number, memoryTab: boolean) {
   );
   const sample = linux?.value ?? null;
   const linuxBlock = linuxStatus(current, sample);
-  const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null);
+  const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null, current.leaks);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {

@@ -170,6 +170,9 @@ function host() {
     topWindowsAt: 0,
     pools: null,
     poolsAt: 0,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor(
       () => {},
       [],
