@@ -219,9 +219,47 @@ function drawTop(state) {
   $("top").replaceChildren(...(rows.length > 0 ? rows : [empty]));
 }
 
+// The suspended app the headline names, when it may be ended: `{ pid, name }` or null.
+let ending = false;
+
+/** The End it button beside the headline: shown while a holder is named, disabled while it is being ended. */
+function drawEndIt(holder) {
+  const button = $("end-it");
+  button.hidden = holder === null || holder === undefined;
+  button.disabled = ending;
+  button.textContent = ending ? "Ending…" : "End it";
+  button.onclick = () => endIt(holder);
+}
+
+async function endIt(holder) {
+  if (ending || !holder) return;
+  ending = true;
+  $("end-error").hidden = true;
+  drawEndIt(holder);
+  try {
+    const response = await fetch("api/end-holder", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pid: holder.pid, name: holder.name }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? response.statusText);
+  } catch (error) {
+    $("end-error").hidden = false;
+    $("end-error").textContent = String(error.message ?? error);
+  }
+  ending = false;
+  // The next status says it was ended (or still names the holder after a failure).
+  if (last !== null) drawEndIt(last.endHolder);
+  await refresh(last?.window ?? 60);
+}
+
 function drawMachine(state) {
   $("verdict").className = `verdict ${state.headline.tone}`;
-  $("headline").textContent = state.headline.text;
+  $("headline").textContent = state.holderEnded
+    ? `${state.headline.text} ${state.holderEnded}`
+    : state.headline.text;
+  drawEndIt(state.endHolder);
   drawWhere(state);
   const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
   if (state.windows !== null) cards.push(windowsCard(state.windows, state.top.windows));

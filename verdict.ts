@@ -163,7 +163,12 @@ function availableCheck(bytes: number, memTotal: number): MemoryCheck {
  * event-tracing leak (`chooseEtwHolder`; null where none was found or the read
  * failed).
  */
-export type PoolLeaks = { growth: readonly PoolGrowth[] | null; holder: EtwHolder | null };
+export type PoolLeaks = {
+  growth: readonly PoolGrowth[] | null;
+  holder: EtwHolder | null;
+  /** The headline sentence after the reader ended the holder (`end-holder.ts`); gone with the next holder read. */
+  ended?: string | undefined;
+};
 
 /** At most this many growing tags are named in a pool's reason. */
 const GROWING_NAMED = 3;

@@ -28,6 +28,7 @@
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import { due, firstPace, hurry, pace, readLinuxNow } from "./cadence";
 import { ownerOf } from "./docker";
+import { endBlock, endCurrentHolder } from "./end-holder";
 import { GpuMonitor } from "./gpu-live";
 import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
@@ -487,6 +488,8 @@ export function status(current: State, seconds: number, memoryTab: boolean) {
       headline(places(current, linuxBlock.linux?.verdicts ?? null, windowsJudged)),
       greyOff,
     ),
+    // The suspended app the End it button beside the headline may end, and what it said when ended.
+    ...endBlock(current.leaks),
     gpu,
     ...linuxBlock,
     // Why the prifly tab is empty: "" wherever the process table is read, and on a
@@ -521,6 +524,7 @@ export function status(current: State, seconds: number, memoryTab: boolean) {
 export function panel(_panelId: string, request: PanelRequest): unknown {
   const current = state;
   if (current === null) throw new Error("Performance is not running.");
+  if (request.path === "end-holder") return endCurrentHolder(current, request.body);
   if (request.path !== "status") throw new Error(`No such request: ${request.path}`);
   const seconds = windowOf(request.query["window"]);
   const wasOpen = open(current);

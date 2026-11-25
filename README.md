@@ -183,8 +183,12 @@ also names the likely holder: a suspended process started over an hour ago
 with at least 100 event-tracing registrations (a suspended app never drains
 the notifications queued for its providers), as *SystemSettings, started 15
 Nov and now suspended, holds 639 event-tracing registrations: closing it
-should free them.* once, however many pools grow. If a read fails, the text
-is the plain one and the failure is logged.
+should free them.* once, however many pools grow. Windows starts Settings
+(`SystemSettings.exe`) by itself and suspends it at once, so this one comes
+back; an **End it** button beside the headline ends the named process (only
+the one named now, by its pid) and the headline then says when it was ended;
+Windows frees the memory over the next minutes. If a read fails, the text is
+the plain one and the failure is logged.
 
 Commit charge is the memory row's headline because it is what runs out.
 Every allocation a program makes is promised against the commit limit, RAM

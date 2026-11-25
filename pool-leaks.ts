@@ -73,6 +73,7 @@ function readEtwHolder(current: State): void {
   current.etwHolderAt = Date.now();
   etwHolders()
     .then((out) => {
+      current.leaks.ended = undefined;
       const processes = parseEtwHolders(out);
       if (processes === null) {
         current.api.log("etw_holders_failed", { error: "no process with event-tracing handles" });

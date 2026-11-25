@@ -156,6 +156,24 @@ h1 {
   margin-bottom: 14px;
   border: 1px solid var(--border);
 }
+.verdict .end-it {
+  flex: none;
+  font: inherit;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.verdict .end-it:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.verdict .end-error {
+  flex: none;
+  color: var(--critical);
+}
 .verdict.warning {
   background: color-mix(in srgb, var(--warning) 9%, transparent);
   border-color: color-mix(in srgb, var(--warning) 40%, transparent);
