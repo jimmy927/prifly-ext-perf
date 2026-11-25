@@ -134,8 +134,7 @@ nothing wrong (4,195 measured on the machine this was written on).
 
 ![The prifly tab](screenshots/prifly-light.png)
 
-- **Tiles**: processes, sessions working and idle (plus cloud sessions active
-  this hour), MCP server copies, memory, and CPU and disk.
+- **Tiles**: processes, sessions working and idle, MCP server copies, memory, and CPU and disk.
 - **By kind**: stacked bars for memory, CPU and processes, split into each
   session's `claude`, MCP servers, the tools turns run (shells, tests,
   builds), the Docker containers sessions started, the host with its helpers,
@@ -162,9 +161,6 @@ nothing wrong (4,195 measured on the machine this was written on).
 - **By session**: each session's processes, CPU, memory, disk, MCP servers
   and the busiest program its turn is running now, grouped into working,
   waiting for you, idle at their prompt, and other.
-
-Cloud sessions run on Anthropic's machines and their MCP servers run in that
-sandbox, so they add no processes here. They are only counted.
 
 ## Nanny
 
@@ -210,9 +206,8 @@ you are.
   package or script each one runs. `npx -y @playwright/mcp` runs as `npm exec
   @playwright/mcp`, so the launcher alone tells nothing. A process that looks
   like an MCP server but is in no config read here shows as *unlisted*.
-- **Windows' busiest processes** (the shared PowerShell, every 10 s) and **cloud
-  sessions** (prifly's accounts, every 5 min) are read only while the window
-  is open.
+- **Windows' busiest processes** (the shared PowerShell, every 10 s) are read
+  only while the window is open.
 
 On a Linux with no Windows around it there is no Windows to read: the window
 shows Linux alone.

@@ -186,11 +186,10 @@ function drawTiles(report, state) {
   const waiting = report.sessions.filter((s) => s.state === "waiting").length;
   const idle = report.sessions.filter((s) => s.state === "idle").length;
   const copies = report.mcp.reduce((sum, m) => sum + m.copies, 0);
-  const cloud = state.cloud === null ? "" : ` · ${state.cloud.recent} cloud this hour`;
   const k = report.kinds;
   $("tiles").replaceChildren(
     tile("Processes", String(report.total.processes), `for ${report.sessions.length} sessions`),
-    tile("Sessions", `${working} working`, `${waiting} waiting for you · ${idle} idle${cloud}`),
+    tile("Sessions", `${working} working`, `${waiting} waiting for you · ${idle} idle`),
     tile(
       "MCP server copies",
       String(copies),
@@ -261,7 +260,7 @@ function group(title, rows) {
   ];
 }
 
-function drawSessions(report, state) {
+function drawSessions(report) {
   const maxCpu = Math.max(1, ...report.sessions.map((s) => s.cpu));
   const working = report.sessions.filter((s) => WORKING.has(s.state));
   const waiting = report.sessions.filter((s) => s.state === "waiting");
@@ -278,10 +277,6 @@ function drawSessions(report, state) {
   ]) {
     rows.push(...group(title, list), ...list.map((s) => sessionRow(s, maxCpu)));
   }
-  if (state.cloud !== null) {
-    const text = `Cloud · ${state.cloud.recent} active this hour, ${state.cloud.total} in all — they run on Anthropic's machines, with no processes here`;
-    rows.push(el("tr", { class: "group" }, el("td", { colspan: "8" }, text)));
-  }
   $("sessions").replaceChildren(...rows);
 }
 
@@ -296,7 +291,7 @@ function drawPrifly(state) {
   drawTiles(report, state);
   drawKinds(report, state);
   drawMcp(report);
-  drawSessions(report, state);
+  drawSessions(report);
 }
 
 function draw(state) {

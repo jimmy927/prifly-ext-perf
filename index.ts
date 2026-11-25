@@ -7,8 +7,8 @@
  *
  * Linux is read every second, always: a few small files, for the chip.
  * Windows' counters come from one `typeperf` that stays running. The process
- * table, Docker's containers, Windows' busiest processes and the cloud
- * sessions are read only while the window is open, since nothing else shows them — except that the
+ * table, Docker's containers and Windows' busiest processes are read only
+ * while the window is open, since nothing else shows them — except that the
  * process table is also read every 5 s whenever WSL's CPU or memory is not
  * green, for the nanny (`nanny.ts`), which names the sessions whose tools
  * cause the load. Every number the window shows is an average over the window
@@ -79,7 +79,6 @@ const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
 /** Containers' names and mounts change only when one starts or stops. */
 const DOCKER_EVERY = 10_000;
-const CLOUD_EVERY = 5 * 60_000;
 const PROCS_ABSENT =
   "prifly runs on Windows itself here, and its processes are read only from inside WSL: not on this host.";
 
@@ -104,8 +103,6 @@ type State = {
   topWindowsAt: number;
   /** The graphics card, read while the window is open (`gpu-live.ts`). */
   gpu: GpuMonitor;
-  cloud: { recent: number; total: number } | null;
-  cloudAt: number;
   askedAt: number;
   /** Seconds of the window it asked for last. */
   askedWindow: number;
@@ -208,19 +205,6 @@ function refreshWhileOpen(current: State): void {
         current.topWindows = top;
       })
       .catch((error: unknown) => current.api.log("top_failed", { error: String(error) }));
-  }
-  if (now - current.cloudAt > CLOUD_EVERY) {
-    current.cloudAt = now;
-    current.api.cloud
-      .sessions()
-      .then((sessions) => {
-        const hour = Date.now() - 3_600_000;
-        current.cloud = {
-          recent: sessions.filter((s) => s.updatedAt > hour).length,
-          total: sessions.length,
-        };
-      })
-      .catch((error: unknown) => current.api.log("cloud_failed", { error: String(error) }));
   }
 }
 
@@ -379,8 +363,6 @@ export function activate(api: ExtensionApi): () => void {
     topWindows: [],
     topWindowsAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
-    cloud: null,
-    cloudAt: 0,
     askedAt: 0,
     askedWindow: 0,
     chip: "",
@@ -474,7 +456,6 @@ function status(current: State, seconds: number) {
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
     top: { linux: topLinux(table, containers, report), windows: current.topWindows },
     prifly: report,
-    cloud: current.cloud,
     window: seconds,
     // A window that has not filled yet says how much it has.
     covered: Math.min(
