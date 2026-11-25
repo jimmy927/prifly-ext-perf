@@ -5,19 +5,30 @@
 
 import { drawKinds, drawSplit } from "./bars.js";
 import { startEvery } from "./every.js";
-import { $, bytes, cores, el, pct, rate, spark } from "./format.js";
+import { $, bytes, cores, el, pct, programName, rate, spark } from "./format.js";
 import { gpuCard } from "./gpu.js";
+import { drawHolders } from "./holders.js";
 import { drawMcp } from "./mcp.js";
+import { memoryChecks, memoryRead, pagingRead, poolsRead } from "./memory.js";
+import { drawMemoryTab, redrawMemoryTab } from "./memtab.js";
+import { drawWhere, segment } from "./where.js";
 
 let last = null;
 
-function metric(tone, name, main, small, line) {
+/** One row of a host card; `below` goes under its reading (a bar, more lines). */
+function metric(tone, name, main, small, line, below = []) {
   return el(
     "div",
     { class: `metric ${tone}` },
     el("span", { class: "dot" }),
     el("span", { class: "name" }, name),
-    el("span", { class: "read" }, el("span", { class: "num" }, main), el("small", {}, small)),
+    el(
+      "span",
+      { class: "read" },
+      el("span", { class: "num" }, main),
+      el("small", {}, small),
+      ...below,
+    ),
     line,
   );
 }
@@ -73,30 +84,78 @@ function linuxCard(linux) {
   ]);
 }
 
-/** WSL where it is not read (a host on Windows itself, with no WSL running): why, in place of its rows. */
+/**
+ * WSL where it is not read (a host on Windows itself, with no WSL running or
+ * WSL not answering): why, and when it is asked again, in place of its rows.
+ */
 function absentCard(why) {
-  return hostCard("WSL", "not on this host", [el("p", { class: "muted" }, why)]);
+  return hostCard("WSL", "not read now", [el("p", { class: "muted" }, why)]);
 }
 
-function windowsRows(c, info, v) {
-  const share = c.wslVm === null ? "" : `WSL VM ${pct(c.wslVm / info.cores)} of the machine`;
+/** How many programs the CPU row names by the kernel time they spend. */
+const KERNEL_NAMED = 4;
+
+/**
+ * Under the CPU row: Windows' busy time split into programs, Windows' own
+ * kernel and the WSL VM (which Windows counts as kernel time), as a bar over
+ * the machine, and the programs that spend most time in the kernel.
+ */
+function cpuBelow(split, top) {
+  if (split === null) return [];
+  const bar = el(
+    "div",
+    { class: "stack cpusplit" },
+    segment("k-host", "Programs", split.user, 100, pct),
+    segment("k-kernel", "Windows' kernel", split.kernel, 100, pct),
+    segment("k-containers", "WSL VM", split.vm, 100, pct),
+  );
+  const named = top
+    .filter((p) => p.kernel >= 0.05)
+    .sort((a, b) => b.kernel - a.kernel)
+    .slice(0, KERNEL_NAMED)
+    .map((p) => `${programName(p.name)} ${cores(p.kernel)}`);
+  const kernel =
+    named.length === 0 ? null : el("small", {}, `Most kernel time: ${named.join(" · ")}`);
+  return [bar, kernel];
+}
+
+/** What the CPU row says under its reading: the split where Windows gave it, else the VM's share. */
+function cpuSmall(c, info, split) {
+  if (split === null)
+    return c.wslVm === null ? "" : `WSL VM ${pct(c.wslVm / info.cores)} of the machine`;
+  const vm = split.vm === null ? "" : ` · WSL VM ${pct(split.vm)}`;
+  return `Of the machine: programs ${pct(split.user)} · Windows' kernel ${pct(split.kernel)}${vm}`;
+}
+
+function windowsRows(windows, top) {
+  const { counters: c, info, verdicts: v, split, compressed } = windows;
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
+  const paging = pagingRead(c, compressed, windows.compressionGrowth);
+  const memory = memoryRead(c, info);
+  const checks = windows.memoryChecks ?? [];
+  const pools = poolsRead(c, checks, windows.pools ?? null);
   return [
     metric(
       v.cpu,
       "CPU",
       // The hypervisor's count where there is one: it alone sees the whole machine.
-      `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${c.queue ?? 0} waiting`,
-      share,
+      `${pct(c.machine ?? c.busy ?? 0)} of the machine busy · ${(c.queue ?? 0).toFixed(1)} waiting`,
+      cpuSmall(c, info, split),
       spark(history("windows", "cpu"), 100),
+      cpuBelow(split, top),
     ),
     metric(
       v.memory,
       "Memory",
-      `${bytes((c.availableMB ?? 0) * 2 ** 20)} available · ${pct(c.committed ?? 0)} committed`,
-      `of ${bytes(info.memTotal)}; the WSL VM's share counts as used`,
+      memory.main,
+      memory.small,
       spark(history("windows", "memory"), 100),
+      [
+        ...memoryChecks(checks),
+        el("a", { class: "tomemory", href: "#memory" }, "What uses it: the Memory tab →"),
+      ],
     ),
+    pools && metric(pools.tone, "Kernel pools", pools.main, pools.small, spark([]), pools.below),
     metric(
       v.disk,
       "Disk I/O",
@@ -104,17 +163,11 @@ function windowsRows(c, info, v) {
       `${rate(c.diskRead ?? 0)} read · ${rate(c.diskWrite ?? 0)} write · queue ${(c.diskQueue ?? 0).toFixed(1)}`,
       spark(history("windows", "disk")),
     ),
-    metric(
-      "neutral",
-      "Paging",
-      `${rate((c.pagesOut ?? 0) * 4096)} to the page file`,
-      `Page file ${pct(c.pageFile ?? 0)} used`,
-      spark([]),
-    ),
+    metric("neutral", "Paging", paging.main, paging.small, spark([])),
   ];
 }
 
-function windowsCard(windows) {
+function windowsCard(windows, top) {
   const info = windows.info;
   const detail =
     info === null ? "" : `${info.name} · ${info.cores} cores · ${bytes(info.memTotal)}`;
@@ -122,7 +175,7 @@ function windowsCard(windows) {
     const why = windows.error !== "" ? windows.error : "Starting typeperf, a few seconds…";
     return hostCard("Windows", detail, [el("p", {}, why)]);
   }
-  return hostCard("Windows", detail, windowsRows(windows.counters, info, windows.verdicts));
+  return hostCard("Windows", detail, windowsRows(windows, top));
 }
 
 function topRow(where, what, cpu, memory, disk) {
@@ -148,9 +201,19 @@ function drawTop(state) {
         rate(p.disk),
       ),
     ),
+    // A Windows process's memory is its commit, in RAM or trimmed out of it (`holders.js` says why).
     ...state.top.windows
       .filter((p) => p.cpu >= 0.05)
-      .map((p) => topRow("Windows", p.name, cores(p.cpu), bytes(p.memory), "")),
+      .slice(0, 8)
+      .map((p) =>
+        topRow(
+          "Windows",
+          p.name,
+          cores(p.cpu),
+          el("span", { title: `${bytes(p.ram)} in RAM` }, `${bytes(p.commit)} committed`),
+          "",
+        ),
+      ),
   ];
   const empty = el("tr", {}, el("td", { colspan: "5", class: "muted" }, "Nothing is busy."));
   $("top").replaceChildren(...(rows.length > 0 ? rows : [empty]));
@@ -159,8 +222,9 @@ function drawTop(state) {
 function drawMachine(state) {
   $("verdict").className = `verdict ${state.headline.tone}`;
   $("headline").textContent = state.headline.text;
+  drawWhere(state);
   const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
-  if (state.windows !== null) cards.push(windowsCard(state.windows));
+  if (state.windows !== null) cards.push(windowsCard(state.windows, state.top.windows));
   $("hosts").replaceChildren(...cards);
   // Full width, under the WSL and Windows cards, not a third in their grid.
   $("gpu")?.remove();
@@ -281,7 +345,7 @@ function drawSessions(report) {
 }
 
 function drawPrifly(state) {
-  // A host on Windows itself reads no process table: the tab says so instead.
+  // Where the process table is not read (a host on Windows while WSL is not running), the tab says why.
   const absent = state.processes ?? "";
   $("prifly-absent").hidden = absent === "";
   $("prifly-absent").textContent = absent;
@@ -298,13 +362,17 @@ function draw(state) {
   last = state;
   $("error").hidden = true;
   drawMachine(state);
+  // The Memory tab: the treemap, and under it who holds Windows' memory as a table.
+  drawMemoryTab(state);
+  drawHolders(state);
   drawPrifly(state);
 }
 
 /** Asks for the trailing period's averages and draws them; resolves with the seconds they cover. */
 async function refresh(seconds) {
   try {
-    const response = await fetch(`api/status?window=${seconds}`);
+    // The tab shown: the Memory tab's WSL tile needs the `claude` processes' PSS, read only for it.
+    const response = await fetch(`api/status?window=${seconds}&tab=${tabOf()}`);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? response.statusText);
     draw(body);
@@ -320,17 +388,25 @@ function showTab(tab) {
   for (const section of document.querySelectorAll("section")) section.hidden = section.id !== tab;
   for (const button of document.querySelectorAll(".tab"))
     button.setAttribute("aria-selected", String(button.dataset.tab === tab));
+  // Laid out while hidden, the treemap had no width to fit.
+  if (tab === "memory") redrawMemoryTab();
+  // `#memory/gpu`, the Graphics card card's link: the tab, scrolled to the card's section.
+  if (location.hash === "#memory/gpu") $("gpumem")?.scrollIntoView({ block: "start" });
 }
+
+const TABS = new Set(["machine", "memory", "prifly"]);
+const tabOf = () => {
+  const tab = location.hash.slice(1).split("/")[0];
+  return TABS.has(tab) ? tab : "machine";
+};
 
 for (const button of document.querySelectorAll(".tab")) {
   button.addEventListener("click", () => {
     location.hash = button.dataset.tab;
   });
 }
-addEventListener("hashchange", () =>
-  showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine"),
-);
-showTab(location.hash.slice(1) === "prifly" ? "prifly" : "machine");
+addEventListener("hashchange", () => showTab(tabOf()));
+showTab(tabOf());
 drawSplit(() => {
   if (last !== null) drawPrifly(last);
 });

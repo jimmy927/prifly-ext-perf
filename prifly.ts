@@ -10,6 +10,12 @@
  * last argument is its session's id. The runners that land a branch or run
  * a git button (and the test gate under them) are found the same way: they
  * are detached, so they outlive the host too.
+ *
+ * A host on Windows itself is not in WSL's table: there, `process.pid` is a
+ * Windows pid. Its sessions still run inside WSL, under prifly's agent
+ * (`prifly-agent`), which starts relays and runners as `prifly-agent relay …`
+ * and `prifly-agent …/op-runner.js`; the agent counts as the host, and the
+ * host's own Windows processes are read apart (`windows.ts`) and added to it.
  */
 
 import { basename } from "node:path";
@@ -51,6 +57,11 @@ export type PriflyReport = {
   mcp: McpRow[];
   /** Containers no running session started: outside prifly, like other programs. */
   otherContainers: Usage;
+  /**
+   * Every container, busiest first, with the title of the session that started
+   * it ("" for none): the Where it goes card counts Docker whole, whoever started it.
+   */
+  docker: { name: string; session: string; cpu: number; rss: number }[];
   /** How many containers each side has; their processes are not counted, as Docker hides them. */
   containerCount: { sessions: number; other: number };
   /** What no session owns, by what it is for: the parts of `total` the sessions leave. */
@@ -81,7 +92,25 @@ function addContainer(into: Usage, container: Container): void {
   into.cpu += container.cpu;
 }
 
+/** While `priflyReport` reads WSL's table: the pids it counts, for `otherPrograms`. */
+let counting: Set<number> | null = null;
+/** While it is read: the kind each counted pid is counted as, where the caller asked for it. */
+let countingKind: Map<number, Kind> | null = null;
+/** The report's kinds while it is read: which `Usage` is which kind. */
+let countingKinds: Record<Kind, Usage> | null = null;
+
+/** Every pid `add` sees is counted; the kind is recorded where `into` is one of the kinds. */
+function count(into: Usage, pid: number): void {
+  if (counting === null) return;
+  counting.add(pid);
+  if (countingKind === null || countingKinds === null) return;
+  for (const [kind, usage] of Object.entries(countingKinds)) {
+    if (usage === into) countingKind.set(pid, kind as Kind);
+  }
+}
+
 function add(into: Usage, proc: Proc): void {
+  count(into, proc.pid);
   into.processes += 1;
   into.rss += proc.rss;
   into.cpu += proc.cpu;
@@ -112,12 +141,27 @@ function subtree(tree: Tree, root: Proc): Proc[] {
   return out;
 }
 
-const isRelay = (proc: Proc) => proc.argv.some((arg) => arg.endsWith("relay/relay.ts"));
-/** A land of a writer's branch (`land-branch/runner.ts`) or a git button's run (`git/op-runner.ts`). */
+/** prifly's agent inside WSL, built as one program, which a host on Windows itself runs things through. */
+const isAgent = (proc: Proc) =>
+  proc.comm === "prifly-agent" || basename(proc.argv[0] ?? "") === "prifly-agent";
+/** A relay: the host's `relay/relay.ts`, or the agent's `prifly-agent relay <relays dir> <session id>`. */
+export const isRelay = (proc: Proc) =>
+  proc.argv.some((arg) => arg.endsWith("relay/relay.ts")) ||
+  (isAgent(proc) && proc.argv[1] === "relay");
+/**
+ * A land of a writer's branch (`land-branch/runner.ts`) or a git button's run
+ * (`git/op-runner.ts`); the agent runs them built, from its runners folder
+ * (`prifly-agent …/runners/r-<hash>/op-runner.js`).
+ */
 const isGateRunner = (proc: Proc) =>
   proc.argv.some(
-    (arg) => arg.endsWith("land-branch/runner.ts") || arg.endsWith("git/op-runner.ts"),
+    (arg) =>
+      arg.endsWith("land-branch/runner.ts") ||
+      arg.endsWith("git/op-runner.ts") ||
+      (isAgent(proc) && /\/runners\/r-[0-9a-f]+\/[\w-]*runner\.js$/.test(arg)),
   );
+/** The agent itself (`prifly-agent --port … --relay-dir …`): prifly's own, like the host. */
+const isAgentHost = (proc: Proc) => isAgent(proc) && proc.argv.includes("--relay-dir");
 /** The session a writer's land is for: its state file is under `.prifly/drops/<first 8 of its id>/`. */
 export function gateSessionPrefix(runner: Proc): string | null {
   for (const arg of runner.argv) {
@@ -126,7 +170,7 @@ export function gateSessionPrefix(runner: Proc): string | null {
   }
   return null;
 }
-const isClaude = (proc: Proc) =>
+export const isClaude = (proc: Pick<Proc, "comm" | "argv">) =>
   proc.comm === "claude" || basename(proc.argv[0] ?? "") === "claude";
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 
@@ -327,17 +371,22 @@ function countGate(
   }
 }
 
-/** Which of the host's own helpers a child of it is, by the script it runs. */
-function helperOf(child: Proc): Own {
-  if (child.argv.some((arg) => /\/dictation\/[\w-]+-worker\.ts$/.test(arg))) return "dictation";
-  if (child.argv.some((arg) => arg.endsWith("intent-model/worker.ts"))) return "intent";
+/**
+ * Which of the host's own helpers a child of it is, by the script it runs;
+ * on Windows the path has backslashes and the script may be built (`.js`).
+ */
+export function helperOf(child: Pick<Proc, "argv">): Own {
+  const args = child.argv.map((arg) => arg.replace(/\\/g, "/"));
+  if (args.some((arg) => /\/dictation\/[\w-]+-worker\.[jt]s$/.test(arg))) return "dictation";
+  if (args.some((arg) => /intent-model\/worker\.[jt]s$/.test(arg))) return "intent";
   return "host";
 }
 
 /**
  * The host and what it started that is no session's and no gate: its helpers
  * as host, and its own short `claude` calls — a branch name, a summary — as
- * claude, all of them as `own` by what they are for.
+ * claude, all of them as `own` by what they are for. The agent inside WSL
+ * counts the same way.
  */
 function readHost(
   kinds: Record<Kind, Usage>,
@@ -351,7 +400,8 @@ function readHost(
     add(own.host, host);
   }
   for (const child of tree.children.get(hostPid) ?? []) {
-    if (isRelay(child) || isGateRunner(child)) continue;
+    // Counted on their own: as sessions, as gates, or (an agent) as a host of its own.
+    if (isRelay(child) || isGateRunner(child) || isAgentHost(child)) continue;
     const kind = isClaude(child) ? kinds.claude : kinds.host;
     const helper = own[helperOf(child)];
     for (const proc of subtree(tree, child)) {
@@ -361,20 +411,57 @@ function readHost(
   }
 }
 
+/** What some processes use, added up. */
+export function usageOf(procs: Proc[]): Usage {
+  const usage = empty();
+  for (const proc of procs) add(usage, proc);
+  return usage;
+}
+
+/** A host on Windows itself: its own processes, the host and all under it (`hostTreeOf` in `windows.ts`). */
+export type WindowsHost = { procs: Proc[]; hostPid: number };
+
 /**
  * prifly's processes by kind and session, and Docker's containers beside
  * them: one a running session started counts as that session's, the rest are
- * `otherContainers`.
+ * `otherContainers`. `hostPid` is the host in `procs`; null where the host
+ * is not in them (a host on Windows itself, whose own processes are
+ * `windows`, counted as the host's by the same rules). The pids of `procs`
+ * it counts go into `counted`, and with `kinds` the kind each is counted as
+ * (the Memory tab's WSL tile splits prifly's part by it, `wsl-map.ts`).
  */
 export function priflyReport(
   procs: Proc[],
-  hostPid: number,
+  hostPid: number | null,
   known: ExtensionSession[],
   config: McpConfig,
   containers: Container[] = [],
+  windows: WindowsHost | null = null,
+  counted: Set<number> = new Set(),
+  kinds: Map<number, Kind> | null = null,
+): PriflyReport {
+  counting = counted;
+  countingKind = kinds;
+  try {
+    return readReport(procs, hostPid, known, config, containers, windows);
+  } finally {
+    counting = null;
+    countingKind = null;
+    countingKinds = null;
+  }
+}
+
+function readReport(
+  procs: Proc[],
+  hostPid: number | null,
+  known: ExtensionSession[],
+  config: McpConfig,
+  containers: Container[],
+  windows: WindowsHost | null,
 ): PriflyReport {
   const tree = treeOf(procs);
   const kinds = noKinds();
+  countingKinds = kinds;
   const acc: Acc = { kinds, mcp: new Map(), config };
   const byId = new Map(known.map((session) => [session.id, session]));
   const own: Record<Own, Usage> = {
@@ -389,7 +476,15 @@ export function priflyReport(
   for (const runner of procs.filter(isGateRunner)) {
     countGate(kinds.gates, own.gates, tree, runner, sessions);
   }
-  readHost(kinds, own, tree, hostPid);
+  if (hostPid !== null) readHost(kinds, own, tree, hostPid);
+  for (const agent of procs.filter(isAgentHost)) readHost(kinds, own, tree, agent.pid);
+  if (windows !== null) {
+    // Windows' pids are not WSL's: they stay out of `counted`.
+    const wsl = counting;
+    counting = null;
+    readHost(kinds, own, treeOf(windows.procs), windows.hostPid);
+    counting = wsl;
+  }
   httpServers(acc, sessions);
   const rows = new Map(sessions.map((row) => [row.id, row]));
   const otherContainers = empty();
@@ -418,7 +513,15 @@ export function priflyReport(
   );
   const mcp = [...acc.mcp.values()].sort((a, b) => b.processes - a.processes);
   const byCpu = sessions.sort((a, b) => b.cpu - a.cpu);
-  return { total, kinds, sessions: byCpu, mcp, otherContainers, containerCount, own };
+  const docker = containers
+    .map((container) => ({
+      name: container.name,
+      session: rows.get(container.session)?.title ?? "",
+      cpu: container.cpu,
+      rss: container.memory,
+    }))
+    .sort((a, b) => b.cpu - a.cpu || b.rss - a.rss);
+  return { total, kinds, sessions: byCpu, mcp, otherContainers, docker, containerCount, own };
 }
 
 /**

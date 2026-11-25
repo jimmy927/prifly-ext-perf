@@ -5,8 +5,11 @@
  * second tab is prifly itself: how many processes it runs, for which
  * sessions, how many MCP servers they started, and what each costs.
  *
- * Linux is read every second, always: a few small files, for the chip.
- * Windows' counters come from one `typeperf` that stays running. The process
+ * Linux is read every second whatever the window: a few small files, for the
+ * chip. Windows' counters come from one `typeperf` at a time, always running.
+ * Both slow to every 5 s once nobody has looked and WSL has been green for a
+ * minute, and are read every second again the moment either changes
+ * (`cadence.ts`). The process
  * table, Docker's containers and Windows' busiest processes are read only
  * while the window is open, since nothing else shows them — except that the
  * process table is also read every 5 s whenever WSL's CPU or memory is not
@@ -15,48 +18,62 @@
  * it asked for (`average.ts`).
  *
  * A host on Windows itself (`host.ts`) reads Windows the same way, and the WSL
- * VM's Linux through one `wsl.exe` (`wsl-exe.ts`) while WSL runs; it reads no
- * process table and no containers, so it has no nanny and no prifly tab.
+ * VM's Linux through one `wsl.exe` (`wsl-exe.ts`) while WSL runs: the same
+ * files a second, and, when the process table is read, that table and the
+ * containers' cgroups through the same shell. Its sessions run inside WSL, so
+ * the prifly tab and the nanny work from that table; the host's own Windows
+ * processes (the host and all it started) come from the shared PowerShell.
  */
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
-import {
-  type Container,
-  type ContainerInfo,
-  type ContainerSnapshot,
-  containerInfos,
-  ownerOf,
-  readContainers,
-} from "./docker";
+import { due, firstPace, hurry, pace, readLinuxNow } from "./cadence";
+import { ownerOf } from "./docker";
 import { GpuMonitor } from "./gpu-live";
+import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
+import { holdersOf, withPools } from "./holders";
 import { HOST } from "./host";
 import { McpConfig } from "./mcp";
-import { decide, type NannyMemory, type NannySession, type Notice, newNannyMemory } from "./nanny";
-import { ownerIdsOf, priflyReport, type ToolUse, toolUseOf, topLinux } from "./prifly";
-import type { Decoration, ExtensionApi, ExtensionSession, PanelRequest } from "./prifly-api";
-import { type Proc, type ProcSnapshot, readProcs } from "./procs";
+import { memoryMap } from "./memory-map";
+import { newNannyMemory } from "./nanny";
+import { nannyStep } from "./nanny-step";
+import { readPools } from "./pool-leaks";
+import { pressureOf } from "./pressure";
+import { type Kind, priflyReport, topLinux, type Usage, usageOf } from "./prifly";
+import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
+import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
+import { open, type State } from "./state";
+import { Tables } from "./tables";
 import {
   headline,
   linuxVerdicts,
+  type MemoryCheck,
+  memoryNotes,
+  memoryReasons,
+  type Place,
+  type PoolLeaks,
   type Tone,
   type Verdicts,
+  windowsMemoryChecks,
   windowsVerdicts,
   withGreyWords,
 } from "./verdict";
 import {
+  cpuSplit,
   stopPowershell,
-  topProcesses,
   type WindowsCounters,
   type WindowsInfo,
-  type WindowsProcess,
-  WindowsSampler,
   windowsInfo,
   windowsTools,
 } from "./windows";
-import { type LinuxRaw, type LinuxSample, readLinux } from "./wsl";
+import { averageHost } from "./windows-host-live";
+import { compressionGrowth } from "./windows-memory";
+import { WindowsSampler } from "./windows-sampler";
+import { topProcesses } from "./windows-top";
+import type { LinuxRaw, LinuxSample } from "./wsl";
 import { probeWsl, spawnWslShell, WslLinux } from "./wsl-exe";
+import { type InVm, inVmOf } from "./wsl-map";
 
 const EVERY = 1_000;
 /** The chip judges the last 10 s whether or not the window is open: it must not flicker. */
@@ -67,60 +84,20 @@ const CHIP_WINDOW = 10;
  * Linux and Windows ones (a process table is hundreds of entries a second).
  */
 const PROCS_KEEP = 310;
-/** While only the nanny reads them: every 5 s, 30 s kept, and averaged over the 30 s. */
-const NANNY_EVERY = 5_000;
-const NANNY_KEEP = 30;
-/** A table older than this is from before a gap, and says nothing about now. */
-const NANNY_STALE = 15_000;
-/** The fewest seconds a table must span for its rates to mean anything. */
-const NANNY_MIN_SPAN = 3;
-/** The window asks every second; it counts as open while it asked within this. */
-const OPEN_FOR = 10_000;
 const TOP_WINDOWS_EVERY = 10_000;
-/** Containers' names and mounts change only when one starts or stops. */
-const DOCKER_EVERY = 10_000;
-const PROCS_ABSENT =
-  "prifly runs on Windows itself here, and its processes are read only from inside WSL: not on this host.";
-
-type State = {
-  api: ExtensionApi;
-  /** The last hour of reads, one a second; empty while a host on Windows has no WSL to read. */
-  linux: LinuxRaw[];
-  /** On a host on Windows itself, what reads the WSL VM; null where Linux is this host's `/proc`. */
-  wsl: WslLinux | null;
-  /** Whether this host's process table and Docker's containers are read: not on Windows itself. */
-  procsHere: boolean;
-  /** The last five minutes of process tables, one a second while the window is open. */
-  procs: ProcSnapshot[];
-  /** Docker's containers, read with the process table. */
-  containers: ContainerSnapshot[];
-  /** What each container is, by id, as Docker last said (`docker.ts`). */
-  dockerInfos: Map<string, ContainerInfo>;
-  dockerAt: number;
-  windows: WindowsSampler | null;
-  info: WindowsInfo | null;
-  topWindows: WindowsProcess[];
-  topWindowsAt: number;
-  /** The graphics card, read while the window is open (`gpu-live.ts`). */
-  gpu: GpuMonitor;
-  askedAt: number;
-  /** Seconds of the window it asked for last. */
-  askedWindow: number;
-  /** What the status bar and the session chips show now, as a key: sent again only when it changes. */
-  chip: string;
-  /** What the nanny remembers between seconds (`nanny.ts`). */
-  nanny: NannyMemory;
-  /** Each session's tools, from the latest process table the nanny averaged. */
-  nannyUse: { at: number; use: Map<string, ToolUse>; unowned: number } | null;
-  /** The sessions with a chip now, to log only when they change. */
-  chipped: string;
-};
+/** Seconds of compression store readings kept: a minute's growth, and some over. */
+const COMPRESSION_KEEP = 300;
 
 let state: State | null = null;
 
-/** Windows' verdicts for counters already averaged. */
-function windowsVerdictsOf(info: WindowsInfo | null, c: WindowsCounters | null): Verdicts | null {
-  return c === null || info === null ? null : windowsVerdicts(c, info);
+/** Windows' verdicts for counters already averaged, and the memory checks behind its memory colour. */
+function windowsJudgedOf(
+  info: WindowsInfo | null,
+  c: WindowsCounters | null,
+  leaks: PoolLeaks | null,
+): { verdicts: Verdicts; checks: MemoryCheck[] } | null {
+  if (c === null || info === null) return null;
+  return { verdicts: windowsVerdicts(c, info), checks: windowsMemoryChecks(c, info, leaks) };
 }
 
 function windowsAverage(current: State, seconds: number, endIndex?: number) {
@@ -134,9 +111,21 @@ function linuxName(current: State): string {
   return current.windows === null && current.wsl === null ? "Linux" : "WSL";
 }
 
-function places(current: State, linux: Verdicts | null, windows: Verdicts | null) {
-  const out = linux === null ? [] : [{ name: linuxName(current), verdicts: linux }];
-  if (windows !== null) out.push({ name: "Windows", verdicts: windows });
+function places(
+  current: State,
+  linux: Verdicts | null,
+  windows: ReturnType<typeof windowsJudgedOf>,
+): Place[] {
+  const out: Place[] = linux === null ? [] : [{ name: linuxName(current), verdicts: linux }];
+  if (windows !== null) {
+    const why = memoryReasons(windows.checks).map((check) => check.text);
+    out.push({
+      name: "Windows",
+      verdicts: windows.verdicts,
+      memoryReasons: why,
+      memoryNotes: memoryNotes(windows.checks),
+    });
+  }
   return out;
 }
 
@@ -149,9 +138,11 @@ const ICON_TONE: Record<Tone, Decoration["tone"]> = {
 /** The status-bar item: the Performance button, coloured by the worst of the three. */
 function statusItem(current: State, linux: Verdicts | null): Decoration {
   const windows = windowsAverage(current, CHIP_WINDOW);
-  const judged = places(current, linux, windowsVerdictsOf(current.info, windows?.value ?? null));
+  const counters = windows?.value ?? null;
+  const judged = places(current, linux, windowsJudgedOf(current.info, counters, current.leaks));
   const { tone, text } = headline(judged);
-  const label = tone === "good" ? "Fine" : (text.split(".")[0] ?? text);
+  // The first sentence, without the reasons after its colon (whose "4.7 GB" has a dot of its own).
+  const label = tone === "good" ? "Fine" : (text.split(/: |\. |\.$/)[0] ?? text);
   const details = judged.map(
     ({ name, verdicts }) =>
       `${name}: CPU ${verdicts.cpu}, memory ${verdicts.memory}, disk ${verdicts.disk}`,
@@ -190,138 +181,57 @@ function showAll(
   current.api.show(chips, [item]);
 }
 
-function open(current: State): boolean {
-  return Date.now() - current.askedAt < OPEN_FOR;
+/** The window opened just now: what was kept is from before a gap, so start the processes afresh. Exported for the tests. */
+export function opened(current: State): void {
+  current.tables.clear();
+  // The store's growth is read only while open: a minute from before the gap says nothing now.
+  current.compressions.length = 0;
+  // `topProcesses` is the host's first reading: at once, whenever it last ran.
+  current.topWindowsAt = 0;
+  refreshWhileOpen(current);
 }
 
-function refreshWhileOpen(current: State): void {
+export function refreshWhileOpen(current: State): void {
   const now = Date.now();
-  if (current.procsHere) readProcsAndContainers(current, now);
+  current.tables.readAll(PROCS_KEEP, now);
   current.gpu.refresh(current.windows, now);
   if (current.windows !== null && now - current.topWindowsAt > TOP_WINDOWS_EVERY) {
     current.topWindowsAt = now;
     topProcesses()
       .then((top) => {
-        current.topWindows = top;
+        current.topWindows = top.processes;
+        current.compressed = top.compressed;
+        if (top.compressed !== null) {
+          keep(current.compressions, { at: Date.now(), bytes: top.compressed }, COMPRESSION_KEEP);
+        }
+        // A host on Windows itself is a Windows process: its own, and its window, are told apart.
+        current.holders = holdersOf(top.out, current.tables.native ? process.pid : null);
+        // The same listing gives the host's own processes (the prifly tab), not a read of its own.
+        if (current.tables.native) current.tables.keepWindowsHost(top.out, PROCS_KEEP);
       })
-      .catch((error: unknown) => current.api.log("top_failed", { error: String(error) }));
+      .catch((error: unknown) => {
+        current.api.log("top_failed", { error: String(error) });
+        current.holders = {
+          groups: [],
+          committed: null,
+          pools: null,
+          shared: null,
+          inProcesses: 0,
+          error: `Windows' process list could not be read: ${String(error)}`,
+        };
+      });
   }
 }
 
-function readProcsAndContainers(current: State, now: number): void {
-  keep(current.procs, readProcs(), PROCS_KEEP);
-  const containers = readContainers();
-  keep(current.containers, containers, PROCS_KEEP);
-  // Docker is asked only when a container runs: with none there may be no Docker to ask.
-  if (containers.containers.size > 0 && now - current.dockerAt > DOCKER_EVERY) {
-    current.dockerAt = now;
-    containerInfos()
-      .then((infos) => {
-        current.dockerInfos = infos;
-      })
-      // Until Docker answers, the containers go by their ids.
-      .catch((error: unknown) => current.api.log("docker_failed", { error: String(error) }));
-  }
-}
-
-/**
- * While WSL's CPU or memory is not green and the window is closed, nobody else
- * reads the process table: read it every 5 s, and keep 30 s of it. After a
- * gap the old tables would stretch the average over the gap, so they go.
- */
-function readForNanny(current: State, verdicts: Verdicts, now: number): void {
-  if (verdicts.cpu === "good" && verdicts.memory === "good") return;
-  const last = current.procs.at(-1);
-  if (last !== undefined && now - last.at < NANNY_EVERY - 250) return;
-  if (last !== undefined && now - last.at > NANNY_STALE) current.procs.length = 0;
-  keep(current.procs, readProcs(), NANNY_KEEP);
-}
-
-/**
- * Each session's tools, and the cores no session owns, from the process table
- * averaged over its last 30 s. Worked out once per table, not once a second.
- * Null while the table is missing, stale or too short for its rates to mean
- * anything: a nanny that cannot see says nothing.
- */
-function nannyUse(current: State, now: number): State["nannyUse"] {
-  const last = current.procs.at(-1);
-  if (last === undefined || now - last.at > NANNY_STALE) return null;
-  if (current.nannyUse?.at === last.at) return current.nannyUse;
-  const procs = averageProcs(current.procs, NANNY_KEEP);
-  if (procs === null || procs.covered < NANNY_MIN_SPAN) return null;
-  // The machine's busy cores over the same stretch, less every process some session owns:
-  // what is left is Docker, Windows-side work, or something started by hand.
-  const linux = averageLinux(current.linux, procs.covered);
-  const owners = ownerIdsOf(procs.value);
-  const owned = procs.value.reduce((sum, p) => sum + (owners.has(p.pid) ? p.cpu : 0), 0);
-  const busy = linux === null ? 0 : (linux.value.busy * linux.value.cores) / 100;
-  current.nannyUse = {
-    at: last.at,
-    use: toolUseOf(procs.value, current.api.sessions(), new McpConfig()),
-    unowned: Math.max(0, busy - owned),
-  };
-  return current.nannyUse;
-}
-
-/** The sessions the host knows that run tools, with their state as it is now. */
-function nannySessions(current: State, now: number): { sessions: NannySession[]; unowned: number } {
-  const data = nannyUse(current, now);
-  if (data === null) return { sessions: [], unowned: 0 };
-  const sessions = current.api.sessions().flatMap((session) => {
-    const use = data.use.get(session.id);
-    return use === undefined
-      ? []
-      : [{ id: session.id, title: session.title, state: session.state, ...use }];
-  });
-  return { sessions, unowned: data.unowned };
-}
-
-/** Tells a session to ease off. A failure is logged, never thrown: the nanny must go on. */
-async function sendNotice(current: State, notice: Notice): Promise<void> {
-  current.api.log("nanny_notice", { session: notice.session, text: notice.text });
-  try {
-    const { delivered } = await current.api.prompt(notice.session, notice.text);
-    if (!delivered) current.api.log("nanny_notice_failed", { session: notice.session });
-  } catch (error) {
-    current.api.log("nanny_notice_failed", { session: notice.session, error: String(error) });
-  }
-}
-
-/** One second of the nanny: judge, carry out what it decided, and return the chips to show. */
-function nannyStep(current: State, linux: LinuxSample, verdicts: Verdicts) {
-  const now = Date.now();
-  if (!open(current)) readForNanny(current, verdicts, now);
-  const { sessions, unowned } = nannySessions(current, now);
-  const decision = decide(
-    current.nanny,
-    {
-      verdicts,
-      psi: { cpu: linux.cpu?.some ?? 0, memory: linux.memory?.full ?? 0 },
-      cores: linux.cores,
-      memTotal: linux.memTotal,
-      sessions,
-      unowned,
-    },
-    now,
-  );
-  current.nanny = decision.memory;
-  for (const notice of decision.notices) void sendNotice(current, notice);
-  if (decision.notify !== null) {
-    const { text, session } = decision.notify;
-    current.api.log("nanny_notify", { text, session: session ?? null });
-    const tone = "warning";
-    current.api.notify(text, session === undefined ? { tone } : { tone, session });
-  }
-  return decision.chips;
-}
-
-function tick(current: State): void {
-  if (current.wsl === null) keep(current.linux, readLinux(), HOUR);
-  else {
-    // Its answer lands in the ring a moment later (`activate`).
-    current.wsl.poll();
-    // No WSL now: what was kept is from before the gap, and says nothing about now.
-    if (current.wsl.absent !== "") current.linux.length = 0;
+/** One second: Linux read when due, and the chip, the nanny and the pace from the last 10 s. Exported for the tests. */
+export function tick(current: State, now = Date.now()): void {
+  if (open(current)) hurry(current, now);
+  readPools(current, now);
+  if (due(current.linuxAt, current.pace.every, now)) readLinuxNow(current, now);
+  // No WSL now: what was kept is from before the gap, and says nothing about now.
+  if (current.wsl !== null && current.wsl.absent !== "") {
+    current.linux.length = 0;
+    current.tables.clearWsl();
   }
   if (open(current)) refreshWhileOpen(current);
   const linux = averageLinux(current.linux, CHIP_WINDOW);
@@ -330,12 +240,17 @@ function tick(current: State): void {
     if (current.wsl !== null && windowsAverage(current, CHIP_WINDOW) !== null) {
       showAll(current, null, {});
     }
+    // No WSL to judge: only the chip reads Windows while nobody looks.
+    pace(current, true, now);
     return;
   }
   const verdicts = linuxVerdicts(linux.value);
-  // The nanny names sessions by their processes: none where the table is not read.
-  const chips = current.procsHere ? nannyStep(current, linux.value, verdicts) : {};
-  showAll(current, verdicts, chips);
+  showAll(current, verdicts, nannyStep(current, linux.value, verdicts));
+  pace(
+    current,
+    Object.values(verdicts).every((verdict) => verdict === "good"),
+    now,
+  );
 }
 
 async function learnWindows(current: State): Promise<void> {
@@ -349,19 +264,38 @@ async function learnWindows(current: State): Promise<void> {
 
 export function activate(api: ExtensionApi): () => void {
   const windows = windowsTools() ? new WindowsSampler(EVERY / 1000) : null;
+  const linux: LinuxRaw[] = [];
+  const wsl = HOST.native
+    ? new WslLinux({
+        spawn: spawnWslShell,
+        probe: probeWsl,
+        onRead: (raw) => keep(linux, raw, HOUR),
+      })
+    : null;
   const current: State = {
     api,
-    linux: [],
-    wsl: null,
-    procsHere: !HOST.native,
-    procs: [],
-    containers: [],
-    dockerInfos: new Map(),
-    dockerAt: 0,
+    linux,
+    linuxAt: 0,
+    pace: firstPace(),
+    wsl,
+    tables: new Tables({
+      wsl,
+      windows: windows !== null,
+      hostPid: process.pid,
+      log: (event, data) => api.log(event, data),
+    }),
     windows,
     info: null,
     topWindows: [],
+    compressed: null,
+    compressions: [],
+    holders: null,
     topWindowsAt: 0,
+    pools: null,
+    poolsAt: 0,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor((event, data) => api.log(event, data)),
     askedAt: 0,
     askedWindow: 0,
@@ -370,13 +304,6 @@ export function activate(api: ExtensionApi): () => void {
     nannyUse: null,
     chipped: "",
   };
-  if (HOST.native) {
-    current.wsl = new WslLinux({
-      spawn: spawnWslShell,
-      probe: probeWsl,
-      onRead: (raw) => keep(current.linux, raw, HOUR),
-    });
-  }
   state = current;
   if (windows !== null) {
     windows.start();
@@ -388,6 +315,7 @@ export function activate(api: ExtensionApi): () => void {
     clearInterval(timer);
     windows?.stop();
     current.wsl?.stop();
+    current.tables.stop();
     stopPowershell();
     state = null;
   };
@@ -406,33 +334,152 @@ function linuxStatus(current: State, sample: LinuxSample | null) {
 }
 
 /**
- * prifly's processes, or null where the table is not read (yet, or on a host
- * on Windows): the page draws the prifly tab, and its WSL tiles, only from one.
+ * prifly's processes over the window: the report, null where the table is
+ * not read (yet, or while a host on Windows has no WSL to read) — the page
+ * draws the prifly tab, and its WSL tiles, only from one. A host on Windows
+ * itself is not in the table: its own Windows processes are `priflyWindows`,
+ * null elsewhere and before their first read, and the report counts them as
+ * the host's. `memoryTab`: the page shows the Memory tab, so the `claude`
+ * processes' PSS is read for its WSL tile.
  */
-function reportOf(
-  current: State,
-  table: Proc[] | null,
-  sessions: ExtensionSession[],
-  containers: Container[],
-) {
-  if (table === null || !current.procsHere) return null;
-  return priflyReport(table, process.pid, sessions, new McpConfig(), containers);
+function priflyOf(current: State, seconds: number, memoryTab: boolean) {
+  const { tables } = current;
+  const procs = averageProcs(tables.procs, seconds);
+  const sessions = current.api.sessions();
+  const containers = averageContainers(tables.containers, seconds, tables.dockerInfos, (info) =>
+    ownerOf(info, sessions),
+  );
+  const windowsHost = tables.native
+    ? averageHost(tables.windowsHost, tables.windowsHostLive.ring, seconds)
+    : null;
+  const priflyWindows: Usage | null = windowsHost === null ? null : usageOf(windowsHost);
+  // What "Other" is made of in the Where it goes card; WSL's only once prifly's part is known.
+  const windows = windowsPrograms(current.topWindows, windowsHost ?? []);
+  if (procs === null) {
+    return {
+      procs,
+      containers,
+      report: null,
+      priflyWindows,
+      others: { linux: [], windows },
+      inVm: null,
+    };
+  }
+  const counted = new Set<number>();
+  const kinds = new Map<number, Kind>();
+  const report = priflyReport(
+    procs.value,
+    tables.native ? null : process.pid,
+    sessions,
+    new McpConfig(),
+    containers,
+    windowsHost === null ? null : { procs: windowsHost, hostPid: process.pid },
+    counted,
+    kinds,
+  );
+  const others = { linux: otherPrograms(procs.value, counted), windows };
+  // The `claude`, tool and gate processes' PSS, for the Memory tab's WSL tile: read only while that tab is open.
+  if (memoryTab) {
+    const shared = procs.value.filter((proc) => {
+      const kind = kinds.get(proc.pid);
+      return kind === "claude" || kind === "tools" || kind === "gates";
+    });
+    tables.readPss(
+      shared.map((proc) => proc.pid),
+      Date.now(),
+    );
+  }
+  // What prifly and Docker hold in the VM; a host on Windows' own processes are not among `kinds`.
+  const inVm = inVmOf(procs.value, kinds, tables.pss, containers, report.sessions);
+  return { procs, containers, report, priflyWindows, others, inVm };
 }
 
-/** Everything the page shows, each number averaged over the last `seconds`. */
-function status(current: State, seconds: number) {
+/** Windows' block of the page, from counters already averaged; null where there is no Windows to read. */
+function windowsStatus(
+  current: State,
+  counters: WindowsCounters | null,
+  judged: ReturnType<typeof windowsJudgedOf>,
+) {
+  if (current.windows === null) return null;
+  return {
+    counters,
+    info: current.info,
+    // User, Windows' kernel and the WSL VM, as shares of the machine (`cpuSplit`).
+    split:
+      counters === null || current.info === null ? null : cpuSplit(counters, current.info.cores),
+    compressed: current.compressed,
+    // Bytes a minute over the last minute; null before a minute of reads.
+    compressionGrowth: compressionGrowth(current.compressions),
+    verdicts: judged?.verdicts ?? null,
+    // Every memory check, green ones too: the Memory row shows why it has its colour.
+    memoryChecks: judged?.checks ?? [],
+    pools: current.pools,
+    error: current.windows.error,
+  };
+}
+
+/**
+ * Who holds Windows' memory: null without Windows, `{reading: true}` until its
+ * first read. Its pools are the Memory row's (`counters`), so the two agree.
+ */
+function holdersStatus(current: State, counters: WindowsCounters | null) {
+  if (current.windows === null) return null;
+  if (current.holders === null) return { reading: true };
+  return withPools(current.holders, counters);
+}
+
+/**
+ * The Memory tab's two views (`memory-map.ts`): null without Windows (no tab),
+ * `{reading: true}` until the counters and Windows' own info are read. The
+ * WSL VM's tile is split by `linux` and `inVm` where they are read, and says
+ * why it is whole where `linux` is not (`linuxAbsent`, the Machine tab's).
+ */
+function memoryMapStatus(
+  current: State,
+  counters: WindowsCounters | null,
+  linux: LinuxSample | null,
+  linuxAbsent: string,
+  inVm: InVm | null,
+) {
+  if (current.windows === null) return null;
+  const map = memoryMap({
+    counters,
+    info: current.info,
+    holders: current.holders === null ? null : withPools(current.holders, counters),
+    tags: current.pools?.tags ?? null,
+    compressed: current.compressed,
+    linux,
+    linuxAbsent,
+    inVm,
+  });
+  if (map === null || counters === null || current.info === null) return { reading: true };
+  return {
+    ...map,
+    pressure: pressureOf(
+      counters,
+      current.info,
+      current.holders === null ? null : current.topWindows,
+    ),
+  };
+}
+
+/**
+ * Everything the page shows, each number averaged over the last `seconds`;
+ * `memoryTab` while the page shows the Memory tab. Exported for the tests,
+ * which build a `State` as a host fills it; `panel` is what the page calls.
+ */
+export function status(current: State, seconds: number, memoryTab: boolean) {
   const linux = averageLinux(current.linux, seconds);
   const windows = windowsAverage(current, seconds);
   if (linux === null && windows === null) throw new Error("No sample yet.");
-  const procs = averageProcs(current.procs, seconds);
-  const table = procs?.value ?? [];
-  const linuxBlock = linuxStatus(current, linux?.value ?? null);
-  const windowsJudged = windowsVerdictsOf(current.info, windows?.value ?? null);
-  const sessions = current.api.sessions();
-  const containers = averageContainers(current.containers, seconds, current.dockerInfos, (info) =>
-    ownerOf(info, sessions),
+  const { procs, containers, report, priflyWindows, others, inVm } = priflyOf(
+    current,
+    seconds,
+    memoryTab,
   );
-  const report = reportOf(current, procs?.value ?? null, sessions, containers);
+  const sample = linux?.value ?? null;
+  const linuxBlock = linuxStatus(current, sample);
+  const windowsJudged = windowsJudgedOf(current.info, windows?.value ?? null, current.leaks);
   const gpu = current.gpu.status(current.windows);
   const greyOff = gpu !== null && !gpu.loading && gpu.grey === "short";
   return {
@@ -442,20 +489,25 @@ function status(current: State, seconds: number) {
     ),
     gpu,
     ...linuxBlock,
-    // Why the prifly tab is empty: "" where this host's processes are read.
-    processes: current.procsHere ? "" : PROCS_ABSENT,
-    windows:
-      current.windows === null
-        ? null
-        : {
-            counters: windows?.value ?? null,
-            info: current.info,
-            verdicts: windowsJudged,
-            error: current.windows.error,
-          },
+    // Why the prifly tab is empty: "" wherever the process table is read, and on a
+    // host on Windows itself while WSL runs.
+    processes: current.wsl?.absent ?? "",
+    windows: windowsStatus(current, windows?.value ?? null, windowsJudged),
     history: historyOf(current.linux, current.windows?.history ?? [], current.info, seconds),
-    top: { linux: topLinux(table, containers, report), windows: current.topWindows },
+    top: { linux: topLinux(procs?.value ?? [], containers, report), windows: current.topWindows },
+    holders: holdersStatus(current, windows?.value ?? null),
+    memoryMap: memoryMapStatus(
+      current,
+      windows?.value ?? null,
+      sample,
+      linuxBlock.linuxAbsent,
+      inVm,
+    ),
+    gpuMap: gpuMemoryMap(gpu, current.gpu.history, Date.now()),
+    others,
     prifly: report,
+    // A host on Windows itself: its own Windows processes, which `prifly` counts as the host's too.
+    priflyWindows,
     window: seconds,
     // A window that has not filled yet says how much it has.
     covered: Math.min(
@@ -474,11 +526,12 @@ export function panel(_panelId: string, request: PanelRequest): unknown {
   const wasOpen = open(current);
   current.askedAt = Date.now();
   current.askedWindow = seconds;
-  // Opened just now: what was kept is from before a gap, so start the processes afresh.
   if (!wasOpen) {
-    current.procs.length = 0;
-    current.containers.length = 0;
-    refreshWhileOpen(current);
+    hurry(current, current.askedAt);
+    opened(current);
   }
-  return status(current, seconds);
+  // The page names its tab (`panel/app.js`); the PSS read for the Memory tab stops when it leaves.
+  const memoryTab = request.query["tab"] === "memory";
+  if (!memoryTab) current.tables.clearPss();
+  return status(current, seconds, memoryTab);
 }

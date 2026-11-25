@@ -18,6 +18,19 @@ function linux(over: Partial<LinuxSample>): LinuxSample {
     memAvailable: 8 * GB,
     swapTotal: 0,
     swapUsed: 0,
+    meminfo: {
+      memFree: 0,
+      buffers: 0,
+      cached: 0,
+      shmem: 0,
+      anonPages: 0,
+      slab: 0,
+      sReclaimable: 0,
+      sUnreclaim: 0,
+      vmallocUsed: 0,
+      pageTables: 0,
+      kernelStack: 0,
+    },
     diskRead: 0,
     diskWrite: 0,
     cpu: calm,
@@ -66,10 +79,21 @@ describe("Windows", () => {
   const counters = {
     at: 0,
     busy: 30,
+    user: 20,
+    privileged: 10,
     queue: 0,
     availableMB: 20_000,
     committed: 70,
+    committedBytes: 35 * GB,
+    commitLimit: 50 * GB,
+    poolPaged: 0.6 * GB,
+    poolNonpaged: 0.3 * GB,
     pagesOut: 0,
+    transitionFaults: 2000,
+    demandZeroFaults: 3000,
+    pageFaults: null,
+    cacheFaults: null,
+    pageReads: null,
     pageFile: 5,
     diskIdle: 99,
     readLatency: 0.002,
@@ -78,7 +102,15 @@ describe("Windows", () => {
     diskRead: 0,
     diskWrite: 0,
     machine: 32,
+    wslVmMem: null,
     wslVm: 100,
+    standbyCore: null,
+    standbyNormal: null,
+    standbyReserve: null,
+    modified: null,
+    free: null,
+    poolPagedResident: null,
+    cacheResident: null,
   } satisfies WindowsCounters;
 
   test("a queue over two per core is out of CPU", () => {
@@ -103,6 +135,44 @@ describe("Windows", () => {
   test("writing to the page file is short of memory", () => {
     expect(windowsVerdicts({ ...counters, pagesOut: 500 }, info).memory).toBe("warning");
     expect(windowsVerdicts({ ...counters, pagesOut: 5000 }, info).memory).toBe("critical");
+  });
+
+  // The reader's laptop on 2026-10-29: 92 % committed, 6 GB of 47 GB available,
+  // nothing written to the page file, and 138,000 transition faults a second.
+  const overloaded = {
+    ...counters,
+    availableMB: 6000,
+    committed: 92,
+    pagesOut: 0,
+    transitionFaults: 138_000,
+    demandZeroFaults: 98_000,
+    pageFaults: null,
+    cacheFaults: null,
+    pageReads: null,
+  };
+
+  test("heavy trimming is out of memory with nothing written to the page file", () => {
+    expect(windowsVerdicts(overloaded, info).memory).toBe("critical");
+  });
+
+  test("trimming turns orange, then red, by transition faults a second", () => {
+    expect(windowsVerdicts({ ...counters, transitionFaults: 19_000 }, info).memory).toBe("good");
+    expect(windowsVerdicts({ ...counters, transitionFaults: 30_000 }, info).memory).toBe("warning");
+    expect(windowsVerdicts({ ...counters, transitionFaults: 90_000 }, info).memory).toBe(
+      "critical",
+    );
+  });
+
+  test("commit charge judges as before when nothing is trimmed", () => {
+    expect(windowsVerdicts({ ...overloaded, transitionFaults: 0 }, info).memory).toBe("warning");
+    expect(windowsVerdicts({ ...counters, committed: 89 }, info).memory).toBe("good");
+  });
+
+  test("missing soft-fault counters change nothing", () => {
+    const missing = { ...counters, transitionFaults: null, demandZeroFaults: null };
+    expect(windowsVerdicts(missing, info).memory).toBe("good");
+    const committed = { ...missing, committed: 92 };
+    expect(windowsVerdicts(committed, info).memory).toBe("warning");
   });
 
   test("reads at 30 ms are out of disk", () => {

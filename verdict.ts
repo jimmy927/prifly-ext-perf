@@ -8,14 +8,17 @@
  *   outright. Memory is orange from 5 % `full` or 20 % `some`, red from 20 %
  *   `full`, and also by what is available (orange under 20 %, red under 10 %).
  * - Windows: the long-standing Performance Monitor guidance — a processor
- *   queue above two per core is a CPU bottleneck; memory by commit charge and
- *   page-file writes (`windowsMemory`); disk reads slower than 25 ms are out of spec (15 ms
+ *   queue above two per core is a CPU bottleneck; memory by commit charge,
+ *   page-file writes, trimming and the kernel pools (`windowsMemoryChecks`),
+ *   with the reasons named; disk reads slower than 25 ms are out of spec (15 ms
  *   worth watching). `Pages Input/sec` is left out on purpose: its "under 15"
  *   rule dates from spinning disks, and an NVMe laptop reads thousands a
  *   second with nothing wrong (4,195 measured here, 2026-10-01).
  */
 
+import type { EtwHolder } from "./etw-holders";
 import type { WindowsCounters, WindowsInfo } from "./windows";
+import { isEtwTag, type PoolGrowth } from "./windows-memory";
 import type { LinuxSample } from "./wsl";
 
 export type Tone = "good" | "warning" | "critical";
@@ -51,31 +54,189 @@ export function linuxVerdicts(s: LinuxSample): Verdicts {
 }
 
 /**
- * Windows memory, judged by what shows a real shortage: commit charge (can
- * Windows still hand memory out?) and writes to the page file (is it pushing
- * memory out to make room?). Available memory counts only when it is truly
- * low: the WSL VM keeps its own file cache (`autoMemoryReclaim=disabled`), so
- * 18 % available with 70 % committed and no paging is a calm machine, not a
- * short one (measured here, 2026-10-01).
+ * Transition faults a second at which Windows counts as short, and out, of
+ * memory: pages trimmed out of working sets and faulted straight back.
+ * Calibrated on the one recording there is, made while the machine was
+ * overloaded (2026-10-29, 17:27–17:48, every 5 s, 240 samples; commit 88–98 %,
+ * 2.8–11 GB of 47 GB available, the page file untouched at the median): its
+ * 5th/25th/50th/75th/95th percentiles were 55k/89k/117k/143k/168k a second.
+ * Orange sits below the 5th, so even the mildest minute of that overload is
+ * orange; red below the 25th. No calm reading exists yet (WSL's way into
+ * Windows died at 17:48), so a calm machine's level is not known.
  */
-function windowsMemory(c: WindowsCounters, info: WindowsInfo): Tone {
-  const availableBytes = (c.availableMB ?? 0) * 2 ** 20;
-  const available = info.memTotal > 0 ? availableBytes / info.memTotal : 1;
-  const low =
-    available < 0.05 || availableBytes < 2 ** 30
-      ? "critical"
-      : available < 0.1 || availableBytes < 2 * 2 ** 30
-        ? "warning"
-        : "good";
-  // Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red.
-  return worst(low, band(c.committed ?? 0, 90, 97), band(c.pagesOut ?? 0, 256, 2560));
+export const TRIMMING_WARNING = 30_000;
+export const TRIMMING_CRITICAL = 80_000;
+
+/** Bytes in a kernel pool past which it is abnormal: usual is a few hundred MB, and 4.7 GB was a token leak. */
+export const POOL_ABNORMAL = 2 * 2 ** 30;
+
+const GiB = 2 ** 30;
+export const gb = (n: number): string => `${(n / GiB).toFixed(1)} GB`;
+export const thousands = (n: number): string =>
+  n < 1000 ? `${Math.round(n)}` : `${Math.round(n / 1000)}k`;
+
+/** What Windows memory was judged by: one check, its colour and what it says. */
+export type MemoryCheck = {
+  what: "commit" | "trimming" | "pageFile" | "available" | "poolPaged" | "poolNonpaged";
+  tone: Tone;
+  text: string;
+  /** A sentence of its own the headline adds after the reasons (the process holding an event-tracing leak). */
+  note?: string;
+};
+
+/**
+ * Windows memory, judged by what shows a real shortage: commit charge (can
+ * Windows still hand memory out?), writes to the page file (is it pushing
+ * memory out to make room?), transition faults (is it trimming working sets
+ * and compressing them, which never reaches the page file?) and the kernel's
+ * pools (is a driver or service leaking?). Available memory counts only when
+ * it is truly low: the WSL VM keeps its own file cache
+ * (`autoMemoryReclaim=disabled`), so 18 % available with 70 % committed and no
+ * paging is a calm machine, not a short one (measured here, 2026-10-01).
+ *
+ * Every check Windows gave a reading for, green ones too, so the screen can
+ * say why memory is fine as well as why it is not. A counter that is missing
+ * is no check at all, never a 0.
+ */
+export function windowsMemoryChecks(
+  c: WindowsCounters,
+  info: WindowsInfo,
+  leaks: PoolLeaks | null = null,
+): MemoryCheck[] {
+  const checks = [
+    c.committed === null ? null : commitCheck(c.committed),
+    c.transitionFaults === null ? null : trimmingCheck(c.transitionFaults),
+    c.pagesOut === null ? null : pageFileCheck(c.pagesOut),
+    c.availableMB === null ? null : availableCheck(c.availableMB * 2 ** 20, info.memTotal),
+    c.poolPaged === null ? null : poolCheck("poolPaged", "paged pool", c.poolPaged, leaks),
+    c.poolNonpaged === null
+      ? null
+      : poolCheck("poolNonpaged", "non-paged pool", c.poolNonpaged, leaks),
+  ].filter((check) => check !== null);
+  // The process holding the leak is named once, by the first pool that has one.
+  let named = false;
+  return checks.map((check) => {
+    if (check.note === undefined) return check;
+    if (!named) {
+      named = true;
+      return check;
+    }
+    const { note: _again, ...once } = check;
+    return once;
+  });
+}
+
+function commitCheck(committed: number): MemoryCheck {
+  const text = `${Math.round(committed)} % of commit used`;
+  return { what: "commit", tone: band(committed, 90, 97), text };
+}
+
+function trimmingCheck(faults: number): MemoryCheck {
+  const tone = band(faults, TRIMMING_WARNING, TRIMMING_CRITICAL);
+  return {
+    what: "trimming",
+    tone,
+    text: `Windows is trimming ${thousands(faults)} pages a second`,
+  };
+}
+
+/** Pages of 4 KB: 1 MB/s to the page file is orange, 10 MB/s red. */
+function pageFileCheck(pagesOut: number): MemoryCheck {
+  const mb = (pagesOut * 4096) / 2 ** 20;
+  const text =
+    mb < 0.1 ? "nothing written to the page file" : `${mb.toFixed(1)} MB/s to the page file`;
+  return { what: "pageFile", tone: band(pagesOut, 256, 2560), text };
+}
+
+function availableCheck(bytes: number, memTotal: number): MemoryCheck {
+  const share = memTotal > 0 ? bytes / memTotal : 1;
+  const tone: Tone =
+    share < 0.05 || bytes < GiB ? "critical" : share < 0.1 || bytes < 2 * GiB ? "warning" : "good";
+  const text = tone === "good" ? `${gb(bytes)} available` : `only ${gb(bytes)} available`;
+  return { what: "available", tone, text };
+}
+
+/**
+ * What is known of a leak in the kernel pools: `growth` the tags whose live
+ * allocations grow (`poolGrowth`; null until 5 minutes of readings, or where
+ * the pool tags could not be read) and `holder` the process likely behind an
+ * event-tracing leak (`chooseEtwHolder`; null where none was found or the read
+ * failed).
+ */
+export type PoolLeaks = { growth: readonly PoolGrowth[] | null; holder: EtwHolder | null };
+
+/** At most this many growing tags are named in a pool's reason. */
+const GROWING_NAMED = 3;
+
+const MiB = 2 ** 20;
+const sizeOf = (bytes: number): string =>
+  bytes >= GiB ? gb(bytes) : `${Math.round(bytes / MiB)} MB`;
+
+/** A rate to two significant figures from 100 up: 369 reads "370", 1,108 reads "1,100". */
+function rateOf(perMinute: number): string {
+  const n = perMinute >= 100 ? Number(perMinute.toPrecision(2)) : Math.round(perMinute);
+  return n.toLocaleString("en-US");
+}
+
+/** `EtwD 1.1 GB (+370 a minute, event tracing)`: the meaning is the part of the tag's text before its first semicolon. */
+function growingTag(t: PoolGrowth): string {
+  const meaning = t.meaning.split(";")[0] ?? "";
+  const how = `+${rateOf(t.perMinute)} a minute${meaning === "" ? "" : `, ${meaning}`}`;
+  return `${t.tag} ${sizeOf(t.bytes)} (${how})`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The sentence that names the process holding event-tracing registrations; the date is local. */
+function holderNote(holder: EtwHolder): string {
+  const since = new Date(holder.since);
+  const day = `${since.getDate()} ${MONTHS[since.getMonth()]}`;
+  const n = holder.registrations.toLocaleString("en-US");
+  return `${holder.name}, started ${day} and now suspended, holds ${n} event-tracing registrations: closing it should free them.`;
+}
+
+function poolCheck(
+  what: "poolPaged" | "poolNonpaged",
+  name: string,
+  bytes: number,
+  leaks: PoolLeaks | null,
+): MemoryCheck {
+  if (bytes <= POOL_ABNORMAL) return { what, tone: "good", text: `${name} ${gb(bytes)}` };
+  const head = `kernel ${name} ${gb(bytes)}, over 2 GB: `;
+  if (leaks === null || leaks.growth === null) {
+    return { what, tone: "warning", text: `${head}a driver or service is leaking` };
+  }
+  const pool = what === "poolPaged" ? "paged" : "nonpaged";
+  const growing = leaks.growth.filter((t) => t.pool === pool).sort((a, b) => b.bytes - a.bytes);
+  if (growing.length === 0) {
+    return {
+      what,
+      tone: "warning",
+      text: `${head}nothing is growing now: an old leak; a restart frees it`,
+    };
+  }
+  const text = `${head}growing ${growing.slice(0, GROWING_NAMED).map(growingTag).join(", ")}`;
+  const holder = growing.some((t) => isEtwTag(t.tag)) ? leaks.holder : null;
+  return { what, tone: "warning", text, ...(holder === null ? {} : { note: holderNote(holder) }) };
+}
+
+/** The checks that are not green, worst first: why Windows is short of memory. */
+export function memoryReasons(checks: readonly MemoryCheck[]): MemoryCheck[] {
+  return checks
+    .filter((check) => check.tone !== "good")
+    .sort((a, b) => RANK[b.tone] - RANK[a.tone]);
+}
+
+/** The sentences the reasons carry beyond their own text (`MemoryCheck.note`), for the headline to add once after them. */
+export function memoryNotes(checks: readonly MemoryCheck[]): string[] {
+  return memoryReasons(checks).flatMap((check) => (check.note === undefined ? [] : [check.note]));
 }
 
 export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts {
   const latency = Math.max(c.readLatency ?? 0, c.writeLatency ?? 0) * 1000;
   return {
     cpu: band((c.queue ?? 0) / info.cores, 1, 2),
-    memory: windowsMemory(c, info),
+    memory: worst(...windowsMemoryChecks(c, info).map((check) => check.tone)),
     disk: band(latency, 15, 25),
   };
 }
@@ -96,24 +257,48 @@ export function withGreyWords<H extends { tone: Tone; text: string }>(h: H, grey
 
 const WORDS: Record<Resource, string> = { cpu: "CPU", memory: "memory", disk: "disk" };
 
-/** "Out of CPU in WSL." / "Short of memory in Windows." / "Everything is fine." */
-export function headline(places: { name: string; verdicts: Verdicts }[]): {
+/** A place the headline judges; `memoryReasons` (Windows) says why its memory is not green. */
+export type Place = {
+  name: string;
+  verdicts: Verdicts;
+  memoryReasons?: readonly string[];
+  /** Whole sentences added after the memory sentence (`memoryNotes`). */
+  memoryNotes?: readonly string[];
+};
+
+/**
+ * "Out of CPU in WSL." / "Short of memory in Windows: 96 % of commit used,
+ * Windows is trimming 150k pages a second." / "Nothing is short: …". A place
+ * with memory reasons names them after its memory sentence.
+ */
+export function headline(places: Place[]): {
   tone: Tone;
   text: string;
 } {
   const out: string[] = [];
   let tone: Tone = "good";
   for (const severity of ["critical", "warning"] as const) {
-    for (const { name, verdicts } of places) {
-      const short = (Object.keys(verdicts) as Resource[]).filter((r) => verdicts[r] === severity);
-      if (short.length === 0) continue;
+    for (const place of places) {
+      const sentence = shortSentence(place, severity);
+      if (sentence === null) continue;
       tone = worst(tone, severity);
-      const what = short.map((r) => WORDS[r]).join(" and ");
-      out.push(`${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}.`);
+      out.push(sentence);
     }
   }
   return {
     tone,
     text: out.length > 0 ? out.join(" ") : "Nothing is short: CPU, memory and disk are fine.",
   };
+}
+
+/** One place's sentence for the resources at `severity`, its memory reasons and notes after it; null where none is. */
+function shortSentence(place: Place, severity: "critical" | "warning"): string | null {
+  const { name, verdicts, memoryReasons: why = [], memoryNotes: notes = [] } = place;
+  const short = (Object.keys(verdicts) as Resource[]).filter((r) => verdicts[r] === severity);
+  if (short.length === 0) return null;
+  const what = short.map((r) => WORDS[r]).join(" and ");
+  const memory = short.includes("memory");
+  const reasons = memory && why.length > 0 ? `: ${why.join(", ")}` : "";
+  const after = memory ? notes.map((note) => ` ${note}`).join("") : "";
+  return `${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}${reasons}.${after}`;
 }

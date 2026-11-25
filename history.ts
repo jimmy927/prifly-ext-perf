@@ -4,6 +4,7 @@
  */
 
 import { averageLinux, averageWindows } from "./average";
+import { reallyFree } from "./pressure";
 import { endAt, windowEnds } from "./ring";
 import { machineBusy, type WindowsCounters, type WindowsInfo } from "./windows";
 import type { LinuxRaw, LinuxSample } from "./wsl";
@@ -12,7 +13,15 @@ import type { LinuxRaw, LinuxSample } from "./wsl";
 export type Point = {
   at: number;
   linux: { cpu: number; memory: number; disk: number } | null;
-  windows: { cpu: number; memory: number; disk: number } | null;
+  windows: {
+    cpu: number;
+    memory: number;
+    disk: number;
+    /** The Memory tab's pressure strip (`pressure.ts`); null where Windows gave no counter. */
+    committed: number | null;
+    trimming: number | null;
+    free: number | null;
+  } | null;
 };
 
 function point(
@@ -37,8 +46,14 @@ function point(
         ? null
         : {
             cpu: machineBusy(c),
-            memory: memTotal > 0 ? 100 * (1 - ((c.availableMB ?? 0) * 2 ** 20) / memTotal) : 0,
+            // Commit charge, the memory row's headline; RAM in use where Windows gave no commit.
+            memory:
+              c.committed ??
+              (memTotal > 0 ? 100 * (1 - ((c.availableMB ?? 0) * 2 ** 20) / memTotal) : 0),
             disk: (c.diskRead ?? 0) + (c.diskWrite ?? 0),
+            committed: c.committed,
+            trimming: c.transitionFaults,
+            free: reallyFree(c),
           },
   };
 }

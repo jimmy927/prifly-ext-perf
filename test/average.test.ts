@@ -22,6 +22,19 @@ function raw(second: number, over: Partial<LinuxRaw> = {}): LinuxRaw {
     memAvailable: 4000,
     swapTotal: 0,
     swapUsed: 0,
+    meminfo: {
+      memFree: 0,
+      buffers: 0,
+      cached: 0,
+      shmem: 0,
+      anonPages: 0,
+      slab: 0,
+      sReclaimable: 0,
+      sUnreclaim: 0,
+      vmallocUsed: 0,
+      pageTables: 0,
+      kernelStack: 0,
+    },
     cpu: null,
     memory: null,
     io: null,
@@ -132,6 +145,17 @@ test("levels are the mean of the samples in the window", () => {
   expect(average?.value.load[0]).toBeCloseTo(8.5, 6);
 });
 
+test("meminfo's fields are levels, each the mean of the samples in the window", () => {
+  const ring = linuxRing(10, (second) => ({
+    meminfo: { ...raw(0).meminfo, cached: second * 100, anonPages: 50 },
+  }));
+  const average = averageLinux(ring, 5);
+  // The reads after the window's start: seconds 6 to 10.
+  expect(average?.value.meminfo.cached).toBeCloseTo(800, 6);
+  expect(average?.value.meminfo.anonPages).toBe(50);
+  expect(average?.value.meminfo.slab).toBe(0);
+});
+
 test("time stalled is exact over the window, and stays absent without PSI", () => {
   // Calm but for 2 s fully stalled at seconds 29-30; the kernel's avg10 says 99 throughout.
   const stalled = (second: number) => Math.min(Math.max(second - 28, 0), 2) * 1_000_000;
@@ -156,10 +180,21 @@ test("Windows counters average over the lines that had them", () => {
   const line = (second: number, busy: number | null): WindowsCounters => ({
     at: T0 + second * 1000,
     busy,
+    user: null,
+    privileged: null,
     queue: 0,
     availableMB: second * 10,
     committed: null,
+    committedBytes: null,
+    commitLimit: null,
+    poolPaged: null,
+    poolNonpaged: null,
     pagesOut: null,
+    transitionFaults: null,
+    demandZeroFaults: null,
+    pageFaults: null,
+    cacheFaults: null,
+    pageReads: null,
     pageFile: null,
     diskIdle: null,
     readLatency: null,
@@ -168,7 +203,15 @@ test("Windows counters average over the lines that had them", () => {
     diskRead: null,
     diskWrite: null,
     machine: null,
+    wslVmMem: null,
     wslVm: null,
+    standbyCore: null,
+    standbyNormal: null,
+    standbyReserve: null,
+    modified: null,
+    free: null,
+    poolPagedResident: null,
+    cacheResident: null,
   });
   const ring = [line(0, 10), line(1, 20), line(2, null), line(3, 60)];
   const average = averageWindows(ring, 3);

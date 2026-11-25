@@ -1,0 +1,419 @@
+// The Memory tab's WSL VM tile split by what Linux says the VM holds
+// (`memory-map.ts` draws it): its file cache, prifly's processes, Docker's
+// containers, every other program, the kernel, what is free, and what the VM
+// costs Windows beyond Linux's memory. From `/proc/meminfo` (`wsl.ts`), the
+// prifly report and Docker's counters. prifly's part, Docker's and the
+// kernel's are groups: prifly's by their `claude` (by PSS, `pss.ts`), the
+// agent and relays and the sessions' tools; Docker's by container, each named
+// with the session that started it (Docker's distro is in the same VM); the
+// kernel's by what `/proc/meminfo` names of it.
+//
+// Windows does not say which of the VM's pages it trimmed, so each part is in
+// RAM at the VM's average share.
+
+import { basename } from "node:path";
+import type { Container } from "./docker";
+import type { Tile } from "./memory-map";
+import type { Kind, SessionRow } from "./prifly";
+import type { Proc } from "./procs";
+import { bytesOf, counted, toolTiles } from "./tool-tiles";
+import type { LinuxSample } from "./wsl";
+
+/** Linux's read of the VM: what the split needs of a `LinuxSample`. */
+export type VmLinux = Pick<LinuxSample, "memTotal" | "meminfo">;
+
+/**
+ * Bytes in the VM, as the tiles of two groups: prifly's (the sessions'
+ * `claude`, the agent and relays, the sessions' tools) and Docker's, one
+ * tile per container by its anon memory (`memory.stat`), without its file cache.
+ */
+export type InVm = { prifly: Tile[]; docker: Tile[] };
+
+/** The WSL VM's tile once it is split; `share` is the VM's in-RAM share. */
+const splitWhy = (share: number) =>
+  "The Linux VM's memory, split by what Linux says it holds. Windows charges the VM's whole size " +
+  "against the limit when it starts, used or not. Windows does not say which of the VM's pages it " +
+  `trimmed, so each part's stripes are the VM's average in-RAM share: ${Math.round(share * 100)} %.`;
+
+const RAM_WHY =
+  "The part of the Linux VM's memory in RAM now, split by what Linux says it holds, each part at " +
+  "the VM's average in-RAM share.";
+
+const PART_WHY = {
+  cache:
+    "Files Linux read or wrote, kept in case they are needed again (Buffers and Cached, less shared " +
+    "memory). Linux could drop it at once, but Windows counts it as used like any program's memory: " +
+    "it is promised, and Windows trims and compresses it. autoMemoryReclaim=dropCache in .wslconfig " +
+    "is meant to hand it back to Windows.",
+  prifly:
+    "What prifly's sessions run inside WSL: each session's claude, prifly's agent and relays, and " +
+    "the MCP servers and tools their turns run. The containers a session started are Docker's.",
+  docker:
+    "Every container Docker runs: Docker Desktop's distro is in the same VM, on the same kernel, " +
+    "so its memory is the VM's. Each container's processes' own memory, its file cache in the " +
+    "Linux file cache. A container a session started carries that session's name.",
+  other:
+    "Every other process in the VM: its own memory (AnonPages and Shmem) less prifly's and Docker's.",
+  programs:
+    "Every process in the VM: its own memory (AnonPages and Shmem). What of it is prifly's and " +
+    "Docker's shows once the process table is read.",
+  kernel:
+    "Linux's own memory: what /proc/meminfo puts outside programs, the file cache and free memory.",
+  free: "Memory Linux has not used. Windows has promised it all the same.",
+  overhead:
+    "What the VM costs Windows beyond the memory Linux sees: the VM's own process and devices.",
+};
+
+const KERNEL_WHY = {
+  caches:
+    "Directory entries and inodes the file systems keep (SReclaimable). Linux drops them under " +
+    "pressure, like the file cache.",
+  self:
+    "What the kernel itself needs: the slab it cannot free, vmalloc, page tables and kernel stacks " +
+    "(SUnreclaim, VmallocUsed, PageTables, KernelStack).",
+  unaccounted:
+    "MemTotal less every field /proc/meminfo lists. Drivers take memory straight from the page " +
+    "allocator (WSL's GPU and Hyper-V drivers, for example), and Linux does not name it.",
+};
+
+const sum = (tiles: readonly { value: number }[]) => tiles.reduce((s, t) => s + t.value, 0);
+
+/** A group of `children`, its value theirs added up. */
+const group = (tile: Omit<Tile, "value" | "children">, children: Tile[]): Tile => ({
+  ...tile,
+  value: sum(children),
+  children,
+});
+
+/** A session as the prifly tab names it, by its title; by its folder where it has none. */
+function sessionName(row: SessionRow): string {
+  const title = row.title.trim();
+  if (title !== "" && title !== row.id.slice(0, 8)) return title;
+  return basename(row.cwd) || title || row.id.slice(0, 8);
+}
+
+/** The `claude` tile's text: by PSS, by RSS where `smaps_rollup` was not read, or a mix. */
+function claudeWhy(count: number, rss: number, pss: number, read: number): string {
+  const gb = (n: number) => `${(n / 2 ** 30).toFixed(1)} GB`;
+  const one = count === 1 ? "The session's claude" : `The sessions' ${count} claude processes`;
+  if (read === count) {
+    return (
+      `${one}: ${gb(rss)} counted per process (RSS), ${gb(pss)} once the pages they share are ` +
+      "counted once (PSS, from /proc/<pid>/smaps_rollup)."
+    );
+  }
+  if (read === 0) {
+    return (
+      `${one}, counted per process (RSS): /proc/<pid>/smaps_rollup could not be read, so the ` +
+      "pages they share count once for each of them."
+    );
+  }
+  return (
+    `${one}, the pages they share counted once (PSS, from /proc/<pid>/smaps_rollup) where it ` +
+    `could be read; ${count - read} of them count per process (RSS) instead.`
+  );
+}
+
+/** Which of prifly's process tiles each report kind goes in; containers are tiles of their own. */
+const TILE_OF: Record<Exclude<Kind, "containers">, "claude" | "agent" | "mcp" | "tools"> = {
+  claude: "claude",
+  host: "agent",
+  relay: "agent",
+  mcp: "mcp",
+  tools: "tools",
+  gates: "tools",
+};
+
+/** The processes the report counted (`kinds`), by the tile each goes in. */
+function byTile(procs: readonly Proc[], kinds: ReadonlyMap<number, Kind>) {
+  const by: Record<"claude" | "agent" | "mcp" | "tools", Proc[]> = {
+    claude: [],
+    agent: [],
+    mcp: [],
+    tools: [],
+  };
+  for (const proc of procs) {
+    const kind = kinds.get(proc.pid);
+    if (kind !== undefined && kind !== "containers") by[TILE_OF[kind]].push(proc);
+  }
+  return by;
+}
+
+/**
+ * prifly's and Docker's parts of the VM as tiles. Docker's: every container,
+ * by its anon memory, named with the session (`sessions`, the report's) that
+ * started it where one did. prifly's: the `claude` processes the report counted (`kinds`, from
+ * `priflyReport`), by PSS where `pss` has it and RSS where not; the agent and
+ * relays (with a host inside WSL, the host and its helpers); the MCP servers;
+ * and the sessions' tools and runners. A tile of 0 is left out.
+ */
+export function inVmOf(
+  procs: readonly Proc[],
+  kinds: ReadonlyMap<number, Kind>,
+  pss: ReadonlyMap<number, number>,
+  containers: readonly Container[],
+  sessions: readonly SessionRow[],
+): InVm {
+  const rows = new Map(sessions.map((row) => [row.id, row]));
+  const docker = containers.map((container): Tile => {
+    const row = rows.get(container.session);
+    const key = `wsl:docker:${container.id.slice(0, 12)}`;
+    const value = bytesOf(container.anon);
+    const own = "its processes' own memory (anon in its memory.stat), not its file cache.";
+    if (row === undefined) {
+      const why = `A container no session started: ${own}`;
+      return { key, name: container.name, colour: "k-docker", value, why };
+    }
+    const session = sessionName(row);
+    return {
+      key,
+      name: `${container.service ?? container.name} · ${session}`,
+      colour: "k-docker",
+      value,
+      why: `A container the session ${session} started (${container.name}): ${own} Stopping that stack frees it.`,
+    };
+  });
+  const tiles: Tile[] = [];
+  const by = byTile(procs, kinds);
+  const rss = (list: Proc[]) => list.reduce((s, p) => s + bytesOf(p.rss), 0);
+  const claudeRss = rss(by.claude);
+  const read = by.claude.filter((p) => pss.has(p.pid)).length;
+  const claudePss = by.claude.reduce((s, p) => s + bytesOf(pss.get(p.pid) ?? p.rss), 0);
+  const tools = toolTiles(by.tools, pss);
+  const toolsTile = {
+    key: "wsl:prifly:tools",
+    name: counted("Session tools", by.tools.length),
+    colour: "k-tools",
+    why: tools.why,
+  };
+  tiles.push(
+    {
+      key: "wsl:prifly:claude",
+      name: counted("claude", by.claude.length),
+      colour: "k-claude",
+      value: claudePss,
+      why: claudeWhy(by.claude.length, claudeRss, claudePss, read),
+    },
+    {
+      key: "wsl:prifly:agent",
+      name: "prifly agent and relays",
+      colour: "k-host",
+      value: rss(by.agent),
+      why:
+        "prifly's agent inside WSL and the relays that keep each session alive through a host " +
+        "restart (with the host inside WSL, the host and its helpers too).",
+    },
+    {
+      key: "wsl:prifly:mcp",
+      name: counted("MCP servers", by.mcp.length),
+      colour: "k-mcp",
+      value: rss(by.mcp),
+      why: "The MCP servers each session's claude starts, counted per process (RSS).",
+    },
+    // One child or none: the tile stays whole, like the kernel's.
+    tools.children.length < 2
+      ? { ...toolsTile, value: tools.value }
+      : group(toolsTile, tools.children),
+  );
+  return {
+    prifly: tiles.filter((t) => t.value > 0),
+    docker: docker.filter((t) => t.value > 0).sort((a, b) => b.value - a.value),
+  };
+}
+
+/** `tiles` and their children, each value times `by`. */
+const scaled = (tiles: Tile[], by: number): Tile[] =>
+  tiles.map((t) => ({
+    ...t,
+    value: t.value * by,
+    ...(t.children === undefined ? {} : { children: scaled(t.children, by) }),
+  }));
+
+/**
+ * The kernel's part: `kernel`, the value it had as one tile, split into the
+ * caches it can drop, what it needs itself and what Linux does not name. A
+ * child whose `/proc/meminfo` fields are all missing is left out; with any
+ * field missing the rest is "Rest of the kernel", not "Not accounted by
+ * Linux". One child or none: the tile stays whole.
+ */
+function kernelTile(m: VmLinux["meminfo"], kernel: number): Tile {
+  const tile = { key: "wsl:kernel", name: "Linux kernel", colour: "k-kernel" };
+  const have = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n);
+  const self = [m.sUnreclaim, m.vmallocUsed, m.pageTables, m.kernelStack];
+  const caches = have(m.sReclaimable) ? bytesOf(m.sReclaimable) : null;
+  const own = self.some(have) ? self.filter(have).reduce((s, n) => s + bytesOf(n), 0) : null;
+  const all = caches !== null && self.every(have);
+  const rest = bytesOf(kernel - (caches ?? 0) - (own ?? 0));
+  const children: Tile[] = [
+    ...(caches === null
+      ? []
+      : [
+          {
+            key: "wsl:kernel:caches",
+            name: "Kernel caches",
+            colour: "k-cache",
+            value: caches,
+            why: KERNEL_WHY.caches,
+          },
+        ]),
+    ...(own === null
+      ? []
+      : [
+          {
+            key: "wsl:kernel:self",
+            name: "Kernel itself",
+            colour: "k-kernel",
+            value: own,
+            why: KERNEL_WHY.self,
+          },
+        ]),
+    all
+      ? {
+          key: "wsl:kernel:unaccounted",
+          name: "Not accounted by Linux",
+          colour: "k-shared",
+          value: rest,
+          why: KERNEL_WHY.unaccounted,
+        }
+      : {
+          key: "wsl:kernel:rest",
+          name: "Rest of the kernel",
+          colour: "k-shared",
+          value: rest,
+          why: "What the kernel holds beyond the fields this kernel's /proc/meminfo gives.",
+        },
+  ].filter((t) => t.value > 0);
+  if (children.length < 2) return { ...tile, value: kernel, why: PART_WHY.kernel };
+  return group({ ...tile, why: PART_WHY.kernel }, children);
+}
+
+/**
+ * What the VM holds by Linux's account, in bytes, before any view scales
+ * them: the file cache, the programs (prifly's group and Docker's apart once
+ * `inVm` is read), the kernel's group with whatever `MemTotal` leaves
+ * unaccounted, what is free, and, given the VM's commit, what the VM costs
+ * beyond `MemTotal`. prifly and Docker are capped at what the programs hold,
+ * prifly's children scaled with it. A part of 0 has no tile.
+ */
+export function wslParts(linux: VmLinux, inVm: InVm | null, commit: number | null): Tile[] {
+  const m = linux.meminfo;
+  const cache = bytesOf(m.buffers + m.cached - m.shmem);
+  const programs = bytesOf(m.anonPages) + bytesOf(m.shmem);
+  const priflyWhole = inVm === null ? 0 : sum(inVm.prifly);
+  const prifly = Math.min(priflyWhole, programs);
+  const dockerWhole = inVm === null ? 0 : sum(inVm.docker);
+  const docker = Math.min(dockerWhole, programs - prifly);
+  const free = bytesOf(m.memFree);
+  const kernelOwn = bytesOf(m.slab) + bytesOf(m.pageTables) + bytesOf(m.kernelStack);
+  const kernel = kernelTile(
+    m,
+    kernelOwn + bytesOf(bytesOf(linux.memTotal) - (cache + programs + kernelOwn + free)),
+  );
+  const inLinux = cache + programs + kernel.value + free;
+  const part = (key: keyof typeof PART_WHY, name: string, colour: string, value: number) => ({
+    key: `wsl:${key}`,
+    name,
+    colour,
+    value,
+    why: PART_WHY[key],
+  });
+  const priflyChildren =
+    inVm === null || !(priflyWhole > 0) ? [] : scaled(inVm.prifly, prifly / priflyWhole);
+  const dockerChildren =
+    inVm === null || !(dockerWhole > 0) ? [] : scaled(inVm.docker, docker / dockerWhole);
+  return [
+    part("cache", "Linux file cache", "k-cache", cache),
+    priflyChildren.length === 0
+      ? part("prifly", "prifly sessions", "k-claude", prifly)
+      : group(
+          { key: "wsl:prifly", name: "prifly sessions", colour: "k-claude", why: PART_WHY.prifly },
+          priflyChildren,
+        ),
+    dockerChildren.length === 0
+      ? part("docker", "Docker", "k-docker", docker)
+      : group(
+          {
+            key: "wsl:docker",
+            name: counted("Docker", dockerChildren.length),
+            colour: "k-docker",
+            why: PART_WHY.docker,
+          },
+          dockerChildren,
+        ),
+    inVm === null
+      ? part("programs", "Linux programs", "k-other", programs)
+      : part("other", "Other Linux programs", "k-other", programs - prifly - docker),
+    kernel,
+    part("free", "Free in the VM", "k-headroom", free),
+    part("overhead", "VM overhead", "k-shared", commit === null ? 0 : bytesOf(commit - inLinux)),
+  ].filter((t) => t.value > 0);
+}
+
+/**
+ * `parts` scaled to add up to `total` (down, where Linux counts more than
+ * the VM's commit), their children with them, each with `ram` its share of
+ * `ram` where that is given; none where there is nothing to scale.
+ */
+function scaledTo(parts: Tile[], total: number, ram?: number): Tile[] {
+  const whole = sum(parts);
+  if (!(whole > 0) || !(total > 0)) return [];
+  const withRam = (tiles: Tile[]): Tile[] =>
+    tiles.map((t) => ({
+      ...t,
+      ...(ram === undefined ? {} : { ram: (t.value * ram) / total }),
+      ...(t.children === undefined ? {} : { children: withRam(t.children) }),
+    }));
+  return withRam(scaled(parts, total / whole));
+}
+
+/** Why the VM's tile is whole where Linux is not read and nothing said why. */
+export const NOT_READ = "Linux's memory is not read yet.";
+
+/**
+ * The VM's tile left whole, its `why` saying so and why (`absent`: why Linux
+ * is not read, such as "WSL did not answer for 10 s; …"), so that the detail
+ * says it rather than look like a tile with nothing in it to split.
+ */
+const whole = (tile: Tile, absent: string): Tile => ({
+  ...tile,
+  why: `${tile.why} It is not split by what Linux holds: ${absent || NOT_READ}`,
+});
+
+/**
+ * The promised view's WSL VM tile (its value the VM's commit, its `ram` the
+ * VM's working set) split by `wslParts`; without a Linux read, the tile whole
+ * with why in its `why` (`absent`, why Linux is not read).
+ */
+export function splitWsl(tile: Tile, linux: VmLinux | null, inVm: InVm | null, absent = ""): Tile {
+  if (tile.children !== undefined) return tile;
+  if (linux === null) return whole(tile, absent);
+  const children = scaledTo(wslParts(linux, inVm, tile.value), tile.value, tile.ram);
+  if (children.length === 0) return tile;
+  const share = tile.ram === undefined ? 1 : Math.min(1, tile.ram / tile.value);
+  return { ...tile, why: splitWhy(share), children };
+}
+
+/** `tiles` and their children with `ram:` before each key: the RAM view's keys. */
+const ramKeys = (tiles: Tile[]): Tile[] =>
+  tiles.map((t) => ({
+    ...t,
+    key: `ram:${t.key}`,
+    ...(t.children === undefined ? {} : { children: ramKeys(t.children) }),
+  }));
+
+/**
+ * The RAM view's WSL VM tile (its value the VM's working set) split the same
+ * way, with the VM's `commit` where the process list gave it, scaled to the
+ * working set; without a Linux read, the tile whole with why (`absent`).
+ */
+export function splitWslRam(
+  tile: Tile,
+  linux: VmLinux | null,
+  inVm: InVm | null,
+  commit: number | null,
+  absent = "",
+): Tile {
+  if (linux === null) return whole(tile, absent);
+  const children = ramKeys(scaledTo(wslParts(linux, inVm, commit), tile.value));
+  return children.length === 0 ? tile : { ...tile, why: RAM_WHY, children };
+}

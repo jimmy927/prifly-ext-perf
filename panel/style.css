@@ -216,6 +216,11 @@ h1 {
   color: var(--muted-fg);
   font-size: 11.5px;
 }
+/* Windows' CPU row: programs, Windows' kernel and the WSL VM, over the machine. */
+.read .stack.cpusplit {
+  height: 16px;
+  margin: 4px 0 2px;
+}
 .num {
   font-family: var(--mono);
   font-size: 12px;

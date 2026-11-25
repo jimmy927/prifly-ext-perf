@@ -7,7 +7,8 @@
  * `system.slice/docker-<id>.scope` (Docker Engine under systemd).
  *
  * What each container is — its name, and the paths it mounts — comes from
- * Docker's API on its socket, every 10 s. The paths say which session started
+ * Docker's API on its socket, every 10 s; a host on Windows itself asks the
+ * `docker` command inside WSL instead (`DOCKER_INSPECT`). The paths say which session started
  * it: a mount of a session's scratchpad names the session outright, and a
  * mount or compose project inside one session's folder points at that
  * session. Docker Desktop reports mounts by its own paths
@@ -25,6 +26,8 @@ export type ContainerReading = {
   usage: number;
   /** Memory in use, bytes: the cgroup's, less file cache it can drop (as `docker stats` counts it). */
   memory: number;
+  /** Its processes' anonymous memory, bytes (`memory.stat`'s `anon`): none of the VM's file cache. */
+  anon: number;
 };
 
 /** Every container's counters as one read saw them; rates come from two of these (`average.ts`). */
@@ -34,16 +37,25 @@ export type ContainerSnapshot = { at: number; containers: Map<string, ContainerR
 export type Container = {
   id: string;
   name: string;
+  /** Its compose service, where Compose started it (`ContainerInfo.service`). */
+  service?: string;
   /** Cores in use over the window. */
   cpu: number;
   memory: number;
+  /** Anonymous memory as of the window's end (`ContainerReading.anon`). */
+  anon: number;
   /** The id of the session that started it, or "" when no one session did. */
   session: string;
 };
 
-/** Where Docker Desktop and Docker Engine under systemd put containers' cgroups. */
-const ROOTS = ["/sys/fs/cgroup/docker", "/sys/fs/cgroup/system.slice"];
+/** Where Docker Desktop and Docker Engine under systemd put containers' cgroups, under `/sys/fs/cgroup`. */
+export const ROOTS = ["docker", "system.slice"];
 const CGROUP = /^(?:docker-)?([0-9a-f]{64})(?:\.scope)?$/;
+
+/** A container's id from its cgroup folder's name; null for a folder that is no container's. */
+export function cgroupIdOf(name: string): string | null {
+  return CGROUP.exec(name)?.[1] ?? null;
+}
 
 /** `usage_usec` from a cgroup's `cpu.stat`. */
 export function parseCpuStat(text: string): number {
@@ -55,15 +67,30 @@ export function memoryStat(text: string, field: string): number {
   return Number(new RegExp(`^${field} (\\d+)`, "m").exec(text)?.[1] ?? 0);
 }
 
+/** One container from the text of its cgroup's `cpu.stat`, `memory.current` and `memory.stat`. */
+export function containerReadingOf(
+  id: string,
+  cpuStat: string,
+  memoryCurrent: string,
+  memoryStatText: string,
+): ContainerReading {
+  const inactive = memoryStat(memoryStatText, "inactive_file");
+  return {
+    id,
+    usage: parseCpuStat(cpuStat),
+    memory: Math.max(0, Number(memoryCurrent) - inactive),
+    anon: memoryStat(memoryStatText, "anon"),
+  };
+}
+
 function readOne(dir: string, id: string): ContainerReading | null {
   try {
-    const current = Number(readFileSync(`${dir}/memory.current`, "utf8"));
-    const inactive = memoryStat(readFileSync(`${dir}/memory.stat`, "utf8"), "inactive_file");
-    return {
+    return containerReadingOf(
       id,
-      usage: parseCpuStat(readFileSync(`${dir}/cpu.stat`, "utf8")),
-      memory: Math.max(0, current - inactive),
-    };
+      readFileSync(`${dir}/cpu.stat`, "utf8"),
+      readFileSync(`${dir}/memory.current`, "utf8"),
+      readFileSync(`${dir}/memory.stat`, "utf8"),
+    );
   } catch (error) {
     // Stopped between the listing and the read.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -74,7 +101,8 @@ function readOne(dir: string, id: string): ContainerReading | null {
 /** Reads every running container's cgroup now; none where there is no Docker. */
 export function readContainers(): ContainerSnapshot {
   const containers = new Map<string, ContainerReading>();
-  for (const root of ROOTS) {
+  for (const folder of ROOTS) {
+    const root = `/sys/fs/cgroup/${folder}`;
     let names: string[];
     try {
       names = readdirSync(root);
@@ -82,8 +110,8 @@ export function readContainers(): ContainerSnapshot {
       continue;
     }
     for (const name of names) {
-      const id = CGROUP.exec(name)?.[1];
-      if (id === undefined) continue;
+      const id = cgroupIdOf(name);
+      if (id === null) continue;
       const one = readOne(`${root}/${name}`, id);
       if (one !== null) containers.set(id, one);
     }
@@ -99,8 +127,11 @@ export type ApiContainer = {
   Mounts?: { Source?: string }[] | null;
 };
 
-/** What a container is: its name, and the paths on this side it mounts or was composed from. */
-export type ContainerInfo = { name: string; paths: string[] };
+/**
+ * What a container is: its name, its compose service where Compose started
+ * it, and the paths on this side it mounts or was composed from.
+ */
+export type ContainerInfo = { name: string; service?: string; paths: string[] };
 
 const BIND_LABEL = /^desktop\.docker\.io\/binds\/\d+\/Source$/;
 const COMPOSE_LABELS = [
@@ -119,7 +150,12 @@ export function infoOf(api: ApiContainer): ContainerInfo {
     ...(api.Mounts ?? []).map((mount) => mount.Source ?? ""),
   ].filter((path) => path.startsWith("/") && !path.startsWith("/run/desktop/"));
   const name = (api.Names?.[0] ?? api.Id.slice(0, 12)).replace(/^\//, "");
-  return { name, paths: [...new Set(paths)] };
+  const service = labels["com.docker.compose.service"];
+  return {
+    name,
+    ...(service === undefined || service === "" ? {} : { service }),
+    paths: [...new Set(paths)],
+  };
 }
 
 /** A Claude Code scratchpad: `/tmp/claude-<uid>/<project>/<session id>/…`. */
@@ -167,4 +203,110 @@ export async function containerInfos(): Promise<Map<string, ContainerInfo>> {
   if (!response.ok) throw new Error(`Docker answered ${response.status}`);
   const list = (await response.json()) as ApiContainer[];
   return new Map(list.map((api) => [api.Id, infoOf(api)]));
+}
+
+/**
+ * The same question asked from a host on Windows itself, through the shell
+ * inside WSL (`wsl-exe.ts`): the `docker` there talks to the same Docker, and
+ * prints one JSON line per running container, shaped like the API's answer.
+ */
+export const DOCKER_INSPECT =
+  "docker ps -q --no-trunc | xargs -r docker inspect --format " +
+  `'{"Id":{{json .Id}},"Names":[{{json .Name}}],"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}}}' 2>&1`;
+
+/** What `DOCKER_INSPECT` printed; an error when a line is not JSON (no `docker`, say), with that line. */
+export function parseInspect(out: string): Map<string, ContainerInfo> {
+  const infos = new Map<string, ContainerInfo>();
+  for (const line of out.replace(/\r/g, "").split("\n")) {
+    if (line.trim() === "") continue;
+    let api: ApiContainer;
+    try {
+      api = JSON.parse(line) as ApiContainer;
+    } catch {
+      throw new Error(`docker in WSL: ${line.slice(0, 200)}`);
+    }
+    infos.set(api.Id, infoOf(api));
+  }
+  return infos;
+}
+
+/** The part of Docker's one-shot `GET /containers/<id>/stats` this reads. */
+export type ApiStats = {
+  id: string;
+  read?: string;
+  cpu_stats?: { cpu_usage?: { total_usage?: number } };
+  memory_stats?: { usage?: number; stats?: Record<string, number> };
+};
+
+/**
+ * One container from Docker's stats, counted as its cgroup's files are
+ * (`containerReadingOf`); null for one that stopped (Docker answers with a zero time).
+ */
+export function statsReadingOf(stats: ApiStats): ContainerReading | null {
+  if (stats.read === undefined || stats.read.startsWith("0001-")) return null;
+  const memory = stats.memory_stats ?? {};
+  const fields = memory.stats ?? {};
+  return {
+    id: stats.id,
+    // Docker gives nanoseconds; the cgroup's `usage_usec` is microseconds.
+    usage: (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) / 1000,
+    memory: Math.max(0, (memory.usage ?? 0) - (fields["inactive_file"] ?? 0)),
+    anon: fields["anon"] ?? 0,
+  };
+}
+
+function snapshotOf(all: ApiStats[], at: number): ContainerSnapshot {
+  const containers = new Map<string, ContainerReading>();
+  for (const stats of all) {
+    const one = statsReadingOf(stats);
+    if (one !== null) containers.set(one.id, one);
+  }
+  return { at, containers };
+}
+
+/**
+ * Every running container's counters from Docker's API, for where its cgroups
+ * are out of sight: WSL gives each distro a cgroup namespace of its own, and
+ * Docker Desktop's containers are in another one. Rejects where there is no Docker to ask.
+ */
+export async function readContainerStats(): Promise<ContainerSnapshot> {
+  const get = async (path: string) => {
+    const response = await fetch(`http://docker${path}`, {
+      unix: socketPath(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`Docker answered ${response.status} to ${path}`);
+    return response.json();
+  };
+  const list = (await get("/containers/json")) as ApiContainer[];
+  const all = await Promise.all(
+    list.map((api) => get(`/containers/${api.Id}/stats?stream=false&one-shot=true`)),
+  );
+  return snapshotOf(all as ApiStats[], Date.now());
+}
+
+/**
+ * The same through the shell inside WSL, for a host on Windows itself: one
+ * stats answer per line, each container asked at once into a file of its own
+ * so that no two answers mix. Prints nothing where there is no Docker.
+ */
+export const DOCKER_STATS =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, not a template
+  's="${DOCKER_HOST#unix://}"; [ -S "$s" ] || s=/var/run/docker.sock; d=$(mktemp -d) && ' +
+  "{ docker ps -q --no-trunc 2>/dev/null | xargs -r -P 16 -I{} curl -sf --max-time 5 " +
+  `--unix-socket "$s" -o "$d/{}" 'http://docker/containers/{}/stats?stream=false&one-shot=true'; ` +
+  'cat "$d"/* 2>/dev/null; rm -rf "$d"; }';
+
+/** What `DOCKER_STATS` printed; a line that is not JSON is an error, with that line. */
+export function parseStats(out: string, at: number): ContainerSnapshot {
+  const all: ApiStats[] = [];
+  for (const line of out.replace(/\r/g, "").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      all.push(JSON.parse(line) as ApiStats);
+    } catch {
+      throw new Error(`docker stats in WSL: ${line.slice(0, 200)}`);
+    }
+  }
+  return snapshotOf(all, at);
 }

@@ -1,0 +1,16 @@
+# Line endings live in the repository, not in each clone's core.autocrlf: a Windows clone with autocrlf=true
+# would otherwise check every text file out with CRLF and biome would fail on all of them.
+* text=auto eol=lf
+
+# Real binaries: never converted, never diffed as text.
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.wasm binary

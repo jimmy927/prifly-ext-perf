@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { averageContainers } from "../average";
-import { type ContainerSnapshot, infoOf, memoryStat, ownerOf, parseCpuStat } from "../docker";
+import {
+  type ContainerSnapshot,
+  containerReadingOf,
+  infoOf,
+  memoryStat,
+  ownerOf,
+  parseCpuStat,
+  parseStats,
+  statsReadingOf,
+} from "../docker";
 import type { McpConfig } from "../mcp";
 import { priflyReport } from "../prifly";
 import type { Proc } from "../procs";
@@ -23,6 +32,16 @@ describe("cgroup files", () => {
 
   test("memory.stat gives a field in bytes", () => {
     expect(memoryStat("anon 100\ninactive_file 4096\nactive_file 9\n", "inactive_file")).toBe(4096);
+  });
+
+  test("a container's anon memory is memory.stat's anon, none of its file cache", () => {
+    const stat = "anon 3000\nfile 9000\ninactive_file 4000\n";
+    expect(containerReadingOf("c", "usage_usec 5\n", "12000\n", stat)).toEqual({
+      id: "c",
+      usage: 5,
+      memory: 8000,
+      anon: 3000,
+    });
   });
 });
 
@@ -50,9 +69,12 @@ describe("what a container is", () => {
       Labels: {
         "com.docker.compose.project.working_dir": "/home/j/src/threadhawk/infra",
         "com.docker.compose.project.config_files": "/home/j/src/threadhawk/infra/a.yml,/x/b.yml",
+        "com.docker.compose.service": "postgres",
       },
       Mounts: [{ Source: "/var/lib/docker/volumes/pg/_data" }],
     });
+    // The Memory tab names a session's container by its service.
+    expect(info.service).toBe("postgres");
     expect(info.paths).toEqual([
       "/home/j/src/threadhawk/infra",
       "/home/j/src/threadhawk/infra/a.yml",
@@ -96,7 +118,7 @@ describe("containers over a window", () => {
   const id = "a".repeat(64);
   const snap = (second: number, usage: number): ContainerSnapshot => ({
     at: 1_000_000 + second * 1000,
-    containers: new Map([[id, { id, usage, memory: 2 ** 30 }]]),
+    containers: new Map([[id, { id, usage, memory: 2 ** 30, anon: 2 ** 29 }]]),
   });
   const ring = [snap(0, 0), snap(1, 500_000), snap(2, 3_000_000)];
   const infos = new Map([[id, { name: "bot", paths: [] }]]);
@@ -108,6 +130,7 @@ describe("containers over a window", () => {
       name: "bot",
       cpu: 1.5,
       memory: 2 ** 30,
+      anon: 2 ** 29,
       session: A,
     });
   });
@@ -133,6 +156,7 @@ test("a session's containers count in its row, the rest beside prifly", () => {
     name,
     cpu: 2,
     memory: 100,
+    anon: 60,
     session,
   });
   const config = { forFolder: () => [] } as unknown as McpConfig;
@@ -149,4 +173,34 @@ test("a session's containers count in its row, the rest beside prifly", () => {
   expect(report.otherContainers.cpu).toBe(4);
   expect(report.containerCount).toEqual({ sessions: 1, other: 2 });
   expect(report.total.cpu).toBe(2);
+});
+
+describe("Docker's stats, where the cgroups are out of sight", () => {
+  const stats = (id: string, ns: number) => ({
+    id,
+    read: "2026-11-12T11:56:54.571Z",
+    cpu_stats: { cpu_usage: { total_usage: ns } },
+    memory_stats: { usage: 12000, stats: { anon: 3000, inactive_file: 4000 } },
+  });
+
+  test("a container is counted as its cgroup's files count it", () => {
+    expect(statsReadingOf(stats("c", 5000))).toEqual({
+      id: "c",
+      usage: 5,
+      memory: 8000,
+      anon: 3000,
+    });
+  });
+
+  test("a container that stopped is left out", () => {
+    expect(statsReadingOf({ id: "c", read: "0001-01-01T00:00:00Z" })).toBeNull();
+  });
+
+  test("the shell's output is one answer a line", () => {
+    const out = `${JSON.stringify(stats("a", 1000))}\r\n${JSON.stringify(stats("b", 2000))}\n`;
+    const snapshot = parseStats(out, 7);
+    expect(snapshot.at).toBe(7);
+    expect([...snapshot.containers.keys()]).toEqual(["a", "b"]);
+    expect(() => parseStats("curl: not found\n", 7)).toThrow("curl: not found");
+  });
 });

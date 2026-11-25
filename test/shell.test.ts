@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ScriptShell, type ShellChild } from "../shell";
+import { ScriptShell, ScriptTimeout, type ShellChild } from "../shell";
 
 /** A child the test drives by hand: it records what was written and answers when told. */
 class FakeChild implements ShellChild {
@@ -124,6 +124,8 @@ describe("ScriptShell", () => {
     const queued = shell.run("queued", 1000);
     const first = children[0] as FakeChild;
     await expect(slow).rejects.toThrow("timed out");
+    // Typed, so a reader can say "did not answer" in place of the raw message.
+    await expect(slow).rejects.toBeInstanceOf(ScriptTimeout);
     expect(first.killed).toBe(true);
     expect(children).toHaveLength(2);
     const second = children[1] as FakeChild;

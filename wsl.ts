@@ -24,6 +24,41 @@ export type Pressure = { some: Stall; full: Stall };
 /** The share of a window, in percent, that some task (`some`) or every task (`full`) stalled. */
 export type Stalls = { some: number; full: number };
 
+/**
+ * What `/proc/meminfo` says the VM's memory holds, bytes: the parts the
+ * Memory tab splits the WSL VM's tile into (`memory-map.ts`). A field whose
+ * line the kernel does not print is NaN: missing, not 0.
+ */
+export type Meminfo = {
+  memFree: number;
+  buffers: number;
+  cached: number;
+  shmem: number;
+  anonPages: number;
+  slab: number;
+  /** The slab Linux can drop under pressure (dentries, inodes) and the slab it cannot. */
+  sReclaimable: number;
+  sUnreclaim: number;
+  vmallocUsed: number;
+  pageTables: number;
+  kernelStack: number;
+};
+
+/** Each `Meminfo` field and the `/proc/meminfo` line it is read from. */
+export const MEMINFO_FIELDS: Record<keyof Meminfo, string> = {
+  memFree: "MemFree",
+  buffers: "Buffers",
+  cached: "Cached",
+  shmem: "Shmem",
+  anonPages: "AnonPages",
+  slab: "Slab",
+  sReclaimable: "SReclaimable",
+  sUnreclaim: "SUnreclaim",
+  vmallocUsed: "VmallocUsed",
+  pageTables: "PageTables",
+  kernelStack: "KernelStack",
+};
+
 export type LinuxSample = {
   at: number;
   cores: number;
@@ -38,6 +73,7 @@ export type LinuxSample = {
   memAvailable: number;
   swapTotal: number;
   swapUsed: number;
+  meminfo: Meminfo;
   /** Bytes per second read from and written to disk over the window. */
   diskRead: number;
   diskWrite: number;
@@ -168,6 +204,12 @@ export function rawOf(files: LinuxFiles, at: number, cores: number): LinuxRaw {
     memAvailable: kb("MemAvailable"),
     swapTotal: kb("SwapTotal"),
     swapUsed: kb("SwapTotal") - kb("SwapFree"),
+    meminfo: Object.fromEntries(
+      Object.entries(MEMINFO_FIELDS).map(([field, line]) => [
+        field,
+        mem.has(line) ? kb(line) : Number.NaN,
+      ]),
+    ) as Meminfo,
     cpu: files.cpu,
     memory: files.memory,
     io: files.io,

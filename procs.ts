@@ -2,6 +2,8 @@
  * Every process this Linux can see, from `/proc`, with its counters. Only this distro's processes are visible: Docker
  * Desktop's containers live in a distro of their own, so they count in the
  * kernel's totals (`wsl.ts`) but never appear here; their cgroups do (`docker.ts`).
+ * A host on Windows itself has no `/proc`: it reads the same files through
+ * `wsl.exe` (`wsl-exe.ts`) and parses them with `readingOf`.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -56,31 +58,56 @@ function gone(error: unknown): boolean {
   return errno(error) === "ENOENT" || errno(error) === "ESRCH";
 }
 
-function readIo(pid: number): { read: number; write: number } {
+/** `/proc/<pid>/io`: bytes read from and written to disk since it started. */
+export function parseIo(text: string): { read: number; write: number } {
+  const read = Number(/^read_bytes: (\d+)/m.exec(text)?.[1] ?? 0);
+  const write = Number(/^write_bytes: (\d+)/m.exec(text)?.[1] ?? 0);
+  return { read, write };
+}
+
+/** `/proc/<pid>/cmdline`: its arguments, each ended by a NUL; [] for a kernel thread. */
+export function parseCmdline(text: string): string[] {
+  return text.split("\0").filter(Boolean);
+}
+
+/**
+ * One process from the text of its `stat`, `cmdline` and `io` (null where its
+ * I/O is not ours to read); null when its `stat` makes no sense.
+ */
+export function readingOf(
+  pid: number,
+  stat: string,
+  cmdline: string,
+  io: string | null,
+): ProcReading | null {
+  const parsed = parseProcStat(stat);
+  if (parsed === null) return null;
+  return {
+    pid,
+    ppid: parsed.ppid,
+    comm: parsed.comm,
+    argv: parseCmdline(cmdline),
+    rss: parsed.rssPages * PAGE,
+    ticks: parsed.ticks,
+    ...(io === null ? { read: 0, write: 0 } : parseIo(io)),
+  };
+}
+
+function readIo(pid: number): string | null {
   try {
-    const text = readFileSync(`/proc/${pid}/io`, "utf8");
-    const read = Number(/^read_bytes: (\d+)/m.exec(text)?.[1] ?? 0);
-    const write = Number(/^write_bytes: (\d+)/m.exec(text)?.[1] ?? 0);
-    return { read, write };
+    return readFileSync(`/proc/${pid}/io`, "utf8");
   } catch (error) {
     // Another user's process: its I/O is not ours to read.
-    if (errno(error) === "EACCES" || gone(error)) return { read: 0, write: 0 };
+    if (errno(error) === "EACCES" || gone(error)) return null;
     throw error;
   }
 }
 
-function readOne(
-  pid: number,
-): { proc: Omit<Proc, "cpu" | "read" | "write">; totals: Totals } | null {
+function readOne(pid: number): ProcReading | null {
   try {
-    const stat = parseProcStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
-    if (stat === null) return null;
-    const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
-    const io = readIo(pid);
-    return {
-      proc: { pid, ppid: stat.ppid, comm: stat.comm, argv, rss: stat.rssPages * PAGE },
-      totals: { ticks: stat.ticks, ...io },
-    };
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    return readingOf(pid, stat, cmdline, readIo(pid));
   } catch (error) {
     // Ended between the listing and the read.
     if (gone(error)) return null;
@@ -98,7 +125,7 @@ export function readProcs(): ProcSnapshot {
     const pid = Number(name);
     if (!Number.isInteger(pid)) continue;
     const one = readOne(pid);
-    if (one !== null) procs.set(pid, { ...one.proc, ...one.totals });
+    if (one !== null) procs.set(pid, one);
   }
   return { at: Date.now(), procs };
 }
