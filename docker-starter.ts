@@ -179,25 +179,39 @@ export function transcriptRoots(
 /** `ExtensionSession.id`s are uuids; one that is not is never put in a command. */
 const SESSION_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 
+const HOME_LINE = 'echo "$HOME"';
+
 /**
- * For a host on Windows itself: one shell line, run inside WSL, that prints the
- * `docker` tool calls of `sessions`' transcripts changed since `since` (their
- * ends, `TAIL_BYTES` each; the first line of a tail may be cut and is skipped).
- * The transcripts are found by file name across `projects`, as a Windows
- * host does not know their folders; nothing is read across `\\wsl.localhost`.
+ * What `transcriptScan` printed: WSL's home on the first line (the commands'
+ * `~` and `$HOME` mean that, not the Windows host's), then the transcript lines.
+ */
+export function parseScan(out: string): TranscriptRead {
+  const text = out.replace(/\r/g, "");
+  const end = text.indexOf("\n");
+  return end < 0
+    ? { home: text.trim(), text: "" }
+    : { home: text.slice(0, end), text: text.slice(end + 1) };
+}
+
+/**
+ * For a host on Windows itself: one shell line, run inside WSL, that prints WSL's
+ * home, then the `docker` tool calls of `sessions`' transcripts changed since
+ * `since` (their ends, `TAIL_BYTES` each; the first line of a tail may be cut and
+ * is skipped). The transcripts are found by file name across `projects`, as a
+ * Windows host does not know their folders; nothing is read across `\\wsl.localhost`.
  * `find` does not follow a symlinked account folder (here all link to
  * `~/.claude/projects`, which would be walked seven times, 2 s against 0.3 s);
  * an account folder that is a real one is walked, and `sort -u` drops repeats.
  */
 export function transcriptScan(sessions: readonly ExtensionSession[], since: number): string {
   const ids = sessions.map((session) => session.id).filter((id) => SESSION_ID.test(id));
-  if (ids.length === 0) return "true";
+  if (ids.length === 0) return HOME_LINE;
   const names = ids
     .flatMap((id) => [`-name '${id}.jsonl'`, `-path '*/${id}/subagents/*.jsonl'`])
     .join(" -o ");
   const roots = '"$HOME/.claude/projects" "$HOME"/.local/share/prifly/accounts/*/projects';
   return (
-    `find ${roots} -maxdepth 4 -type f -newermt @${Math.floor(since / 1000)} \\( ${names} \\) -print0 2>/dev/null` +
+    `${HOME_LINE}; find ${roots} -maxdepth 4 -type f -newermt @${Math.floor(since / 1000)} \\( ${names} \\) -print0 2>/dev/null` +
     ` | xargs -0 -r realpath -z | sort -zu | xargs -0 -r tail -q -c ${TAIL_BYTES}` +
     " | grep -a '\"tool_use\".*docker'; true"
   );
@@ -241,7 +255,13 @@ export function readTranscripts(
 }
 
 /** Reads the transcripts' `docker` lines for sessions, since a time: this machine's, or WSL's through the shell. */
-export type TranscriptReader = (sessions: ExtensionSession[], since: number) => Promise<string>;
+export type TranscriptReader = (
+  sessions: ExtensionSession[],
+  since: number,
+) => Promise<TranscriptRead>;
+
+/** The transcript lines, and the home that `~` in their commands means: where the commands ran. */
+export type TranscriptRead = { text: string; home: string };
 
 /** After a failed read, how long before the next. */
 const RETRY = 60_000;
@@ -260,12 +280,10 @@ export class Starters {
 
   private readonly read: TranscriptReader;
   private readonly log: (error: string) => void;
-  private readonly home: string;
 
-  constructor(read: TranscriptReader, log: (error: string) => void, home: string = homedir()) {
+  constructor(read: TranscriptReader, log: (error: string) => void) {
     this.read = read;
     this.log = log;
-    this.home = home;
   }
 
   /** The session that started container `id`, "" when none or not decided yet. */
@@ -292,9 +310,9 @@ export class Starters {
     const since = Math.min(...todo.map(([, info]) => info.created ?? now)) - BEFORE_CREATED;
     this.reading = true;
     this.read(sessions, since)
-      .then((text) => {
+      .then(({ text, home }) => {
         const calls = callsOf(text);
-        for (const [id, info] of todo) this.decided.set(id, starterOf(info, calls, this.home));
+        for (const [id, info] of todo) this.decided.set(id, starterOf(info, calls, home));
       })
       .catch((error: unknown) => {
         this.log(`reading transcripts for container owners: ${String(error)}`);

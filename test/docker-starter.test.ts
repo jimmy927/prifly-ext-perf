@@ -8,6 +8,7 @@ import { infoOf } from "../docker";
 import { commandStarts } from "../docker-command";
 import {
   callsOf,
+  parseScan,
   readTranscripts,
   type StartCall,
   Starters,
@@ -228,7 +229,9 @@ describe("reading the transcripts", () => {
     const out = execFileSync("sh", ["-c", transcriptScan(sessions, since)], {
       env: { ...process.env, HOME: home },
     }).toString();
-    const calls = callsOf(out);
+    const read = parseScan(out);
+    expect(read.home).toBe(home);
+    const calls = callsOf(read.text);
     expect(starterOf(elastic, calls, HOME)).toBe(S);
     expect(starterOf(livekit, calls, HOME)).toBe(S);
     expect(calls.filter((c) => c.command.includes("elasticsearch"))).toHaveLength(1);
@@ -236,7 +239,7 @@ describe("reading the transcripts", () => {
 
   test("a session id that is no uuid is never put in the shell line", () => {
     const bad = [{ id: "x'; rm -rf ~; '", title: "", cwd: "/", state: "idle" }];
-    expect(transcriptScan(bad, 0)).toBe("true");
+    expect(transcriptScan(bad, 0)).toBe('echo "$HOME"');
   });
 });
 
@@ -251,17 +254,19 @@ describe("Starters", () => {
     const starters = new Starters(
       async () => {
         reads++;
-        return `${JSON.stringify({
-          message: {
-            content: [{ type: "tool_use", name: "Bash", input: { command: dockerRun.command } }],
-          },
-          timestamp: new Date(dockerRun.at).toISOString(),
-          sessionId: S,
-          cwd: CWD,
-        })}\n`;
+        return {
+          home: HOME,
+          text: `${JSON.stringify({
+            message: {
+              content: [{ type: "tool_use", name: "Bash", input: { command: dockerRun.command } }],
+            },
+            timestamp: new Date(dockerRun.at).toISOString(),
+            sessionId: S,
+            cwd: CWD,
+          })}\n`,
+        };
       },
       () => {},
-      HOME,
     );
     starters.refresh(infos, sessions, () => false, Date.now());
     await Bun.sleep(10);
@@ -281,7 +286,6 @@ describe("Starters", () => {
         throw new Error("boom");
       },
       (error) => errors.push(error),
-      HOME,
     );
     starters.refresh(infos, sessions, () => true, 0);
     expect(reads).toBe(0);
@@ -292,5 +296,24 @@ describe("Starters", () => {
     expect(errors[0]).toContain("boom");
     starters.refresh(infos, sessions, () => false, 61_000);
     expect(reads).toBe(2);
+  });
+
+  test("a Windows host's read takes `~` in the commands as WSL's home, not its own", async () => {
+    const entry = JSON.stringify({
+      message: {
+        content: [{ type: "tool_use", name: "Bash", input: { command: composeUp.command } }],
+      },
+      timestamp: new Date(composeUp.at).toISOString(),
+      sessionId: S,
+      cwd: CWD,
+    });
+    // What `transcriptScan` prints in WSL; the Windows host's own home is `C:\Users\jimmy`.
+    const starters = new Starters(
+      async () => parseScan(`${HOME}\r\n${entry}\r\n`),
+      () => {},
+    );
+    starters.refresh(new Map([["e", elastic]]), sessions, () => false, Date.now());
+    await Bun.sleep(10);
+    expect(starters.get("e")).toBe(S);
   });
 });

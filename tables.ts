@@ -23,6 +23,7 @@ import {
   readContainers,
 } from "./docker";
 import {
+  parseScan,
   readTranscripts,
   Starters,
   type TranscriptReader,
@@ -116,8 +117,12 @@ export class Tables {
     const wsl = deps.wsl;
     const read: TranscriptReader =
       wsl === null
-        ? async (sessions, since) => readTranscripts(sessions, since, transcriptRoots(homedir()))
-        : (sessions, since) => wsl.run(transcriptScan(sessions, since), WSL_TIMEOUT);
+        ? async (sessions, since) => ({
+            text: readTranscripts(sessions, since, transcriptRoots(homedir())),
+            home: homedir(),
+          })
+        : (sessions, since) =>
+            wsl.run(transcriptScan(sessions, since), WSL_TIMEOUT).then(parseScan);
     this.starters = new Starters(read, (error) => deps.log("docker_starters_failed", { error }));
   }
 

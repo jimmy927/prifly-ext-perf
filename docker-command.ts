@@ -6,7 +6,7 @@
  * container:
  *  - `docker run` / `docker create` (or `docker container …`) with `--name <name>`
  *    or `--name=<name>` naming it;
- *  - `docker compose` / `docker-compose` `up|start|create|run|restart` of its
+ *  - `docker compose` / `docker-compose` `up|create|run` of its
  *    compose service, run from its compose project's folder (`working_dir`) —
  *    the folder being `--project-directory`, else the directory of the first
  *    `-f` file, else the `cd` or the call's own cwd — or with `-p` its project's
@@ -59,7 +59,7 @@ const SUB_VALUE_FLAGS = new Set([
   "--label",
   "--build-arg",
 ]);
-const COMPOSE_STARTS = new Set(["up", "start", "create", "run", "restart"]);
+const COMPOSE_STARTS = new Set(["up", "create", "run"]);
 
 type Compose = {
   sub: string;
