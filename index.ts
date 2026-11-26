@@ -27,7 +27,7 @@
 
 import { averageContainers, averageLinux, averageProcs, averageWindows, windowOf } from "./average";
 import { due, firstPace, hurry, pace, readLinuxNow } from "./cadence";
-import { ownerOf } from "./docker";
+import { containerOwner } from "./docker-starter";
 import { GpuMonitor } from "./gpu-live";
 import { gpuMemoryMap } from "./gpu-map";
 import { historyOf } from "./history";
@@ -43,7 +43,7 @@ import type { Decoration, ExtensionApi, PanelRequest } from "./prifly-api";
 import { otherPrograms, windowsPrograms } from "./programs";
 import { HOUR, keep } from "./ring";
 import { open, type State } from "./state";
-import { Tables } from "./tables";
+import { tablesOf } from "./tables";
 import {
   headline,
   linuxVerdicts,
@@ -297,12 +297,7 @@ export function activate(api: ExtensionApi): () => void {
     linuxAt: 0,
     pace: firstPace(),
     wsl,
-    tables: new Tables({
-      wsl,
-      windows: windows !== null,
-      hostPid: process.pid,
-      log: (event, data) => api.log(event, data),
-    }),
+    tables: tablesOf(api, wsl, windows !== null),
     windows,
     info: null,
     topWindows: [],
@@ -364,8 +359,8 @@ function priflyOf(current: State, seconds: number, memoryTab: boolean) {
   const { tables } = current;
   const procs = averageProcs(tables.procs, seconds);
   const sessions = current.api.sessions();
-  const containers = averageContainers(tables.containers, seconds, tables.dockerInfos, (info) =>
-    ownerOf(info, sessions),
+  const containers = averageContainers(tables.containers, seconds, tables.dockerInfos, (info, id) =>
+    containerOwner(info, sessions, tables.starters.get(id)),
   );
   const windowsHost = tables.native
     ? averageHost(tables.windowsHost, tables.windowsHostLive.ring, seconds)

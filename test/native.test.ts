@@ -273,12 +273,20 @@ describe("Docker asked from inside WSL", () => {
     const line = JSON.stringify({
       Id: CONTAINER,
       Names: ["/odi-elastic-1"],
-      Labels: { "com.docker.compose.project.working_dir": "/home/j/src/odi" },
+      Labels: {
+        "com.docker.compose.project": "odi",
+        "com.docker.compose.project.working_dir": "/home/j/src/odi",
+      },
       Mounts: [],
+      // `docker inspect`'s .Created: an RFC 3339 string with nanoseconds.
+      Created: "2026-11-26T14:39:28.123456789Z",
     });
     expect(parseInspect(`${line}\n`).get(CONTAINER)).toEqual({
       name: "odi-elastic-1",
       paths: ["/home/j/src/odi"],
+      project: "odi",
+      workingDir: "/home/j/src/odi",
+      created: Date.parse("2026-11-26T14:39:28.123Z"),
     });
   });
 

@@ -147,7 +147,7 @@ export function averageContainers(
   ring: readonly ContainerSnapshot[],
   seconds: number,
   infos: ReadonlyMap<string, ContainerInfo>,
-  owner: (info: ContainerInfo) => string,
+  owner: (info: ContainerInfo, id: string) => string,
 ): Container[] {
   const span = spanOf(ring, seconds);
   if (span === null) return [];
@@ -166,7 +166,7 @@ export function averageContainers(
       cpu: rateOf(first.get(reading.id) ?? reading.usage, reading.usage, span.seconds) / 1e6,
       memory: reading.memory,
       anon: reading.anon,
-      session: owner(info),
+      session: owner(info, reading.id),
     };
   });
 }

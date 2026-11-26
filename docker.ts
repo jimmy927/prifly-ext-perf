@@ -11,7 +11,9 @@
  * `docker` command inside WSL instead (`DOCKER_INSPECT`). The paths say which session started
  * it: a mount of a session's scratchpad names the session outright, and a
  * mount or compose project inside one session's folder points at that
- * session. Docker Desktop reports mounts by its own paths
+ * session. A container whose paths name none is looked for in the sessions'
+ * transcripts: the session whose `docker run` or `docker compose up` Bash
+ * call came just before its `Created` time (`docker-starter.ts`). Docker Desktop reports mounts by its own paths
  * (`/run/desktop/mnt/host/wsl/…`) and keeps the WSL paths in
  * `desktop.docker.io/binds/<n>/Source` labels.
  */
@@ -125,13 +127,24 @@ export type ApiContainer = {
   Names?: string[];
   Labels?: Record<string, string> | null;
   Mounts?: { Source?: string }[] | null;
+  /** When it was created: unix seconds from the API's list, an RFC 3339 string from `docker inspect`. */
+  Created?: number | string;
 };
 
 /**
  * What a container is: its name, its compose service where Compose started
  * it, and the paths on this side it mounts or was composed from.
  */
-export type ContainerInfo = { name: string; service?: string; paths: string[] };
+export type ContainerInfo = {
+  name: string;
+  service?: string;
+  paths: string[];
+  /** Its compose project's name and folder (`com.docker.compose.project`, `….working_dir`). */
+  project?: string;
+  workingDir?: string;
+  /** When Docker created it, epoch ms: the time a transcript's call must be just before (`docker-starter.ts`). */
+  created?: number;
+};
 
 const BIND_LABEL = /^desktop\.docker\.io\/binds\/\d+\/Source$/;
 const COMPOSE_LABELS = [
@@ -151,10 +164,17 @@ export function infoOf(api: ApiContainer): ContainerInfo {
   ].filter((path) => path.startsWith("/") && !path.startsWith("/run/desktop/"));
   const name = (api.Names?.[0] ?? api.Id.slice(0, 12)).replace(/^\//, "");
   const service = labels["com.docker.compose.service"];
+  const project = labels["com.docker.compose.project"];
+  const workingDir = labels["com.docker.compose.project.working_dir"];
+  const created =
+    typeof api.Created === "number" ? api.Created * 1000 : Date.parse(api.Created ?? "");
   return {
     name,
     ...(service === undefined || service === "" ? {} : { service }),
     paths: [...new Set(paths)],
+    ...(project === undefined || project === "" ? {} : { project }),
+    ...(workingDir === undefined || workingDir === "" ? {} : { workingDir }),
+    ...(Number.isNaN(created) ? {} : { created }),
   };
 }
 
@@ -212,7 +232,7 @@ export async function containerInfos(): Promise<Map<string, ContainerInfo>> {
  */
 export const DOCKER_INSPECT =
   "docker ps -q --no-trunc | xargs -r docker inspect --format " +
-  `'{"Id":{{json .Id}},"Names":[{{json .Name}}],"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}}}' 2>&1`;
+  `'{"Id":{{json .Id}},"Names":[{{json .Name}}],"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}},"Created":{{json .Created}}}' 2>&1`;
 
 /** What `DOCKER_INSPECT` printed; an error when a line is not JSON (no `docker`, say), with that line. */
 export function parseInspect(out: string): Map<string, ContainerInfo> {

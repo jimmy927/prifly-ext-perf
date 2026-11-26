@@ -9,17 +9,27 @@
  * Windows' process list through the shared PowerShell (`windows.ts`).
  */
 
+import { homedir } from "node:os";
 import {
   type ContainerInfo,
   type ContainerSnapshot,
   containerInfos,
   DOCKER_INSPECT,
   DOCKER_STATS,
+  ownerOf,
   parseInspect,
   parseStats,
   readContainerStats,
   readContainers,
 } from "./docker";
+import {
+  readTranscripts,
+  Starters,
+  type TranscriptReader,
+  transcriptRoots,
+  transcriptScan,
+} from "./docker-starter";
+import type { ExtensionApi, ExtensionSession } from "./prifly-api";
 import { type ProcSnapshot, readProcs } from "./procs";
 import { parsePssRead, pssRead, readPss } from "./pss";
 import { keep } from "./ring";
@@ -59,6 +69,8 @@ export type TableDeps = {
   windowsList?: () => Promise<string>;
   /** What runs the per-second read of the host's processes (`liveRead`); `powershell` unless a test gives its own. */
   windowsLive?: (script: string, timeout: number) => Promise<string>;
+  /** The sessions the host knows (`ExtensionSession`), for finding who started a container from the transcripts; none unless given. */
+  sessions?: () => ExtensionSession[];
   log: (event: string, data: { error: string }) => void;
 };
 
@@ -69,6 +81,8 @@ export class Tables {
   readonly containers: ContainerSnapshot[] = [];
   /** What each container is, by id, as Docker last said (`docker.ts`). */
   dockerInfos = new Map<string, ContainerInfo>();
+  /** Who started the containers whose paths name no session, from the transcripts (`docker-starter.ts`). */
+  readonly starters: Starters;
   /** On a host on Windows itself, the host and all it started there; empty elsewhere. */
   readonly windowsHost: ProcSnapshot[] = [];
   /** Their CPU and working set every second, for the pids of the newest tree (`windows-host-live.ts`). */
@@ -98,6 +112,13 @@ export class Tables {
   constructor(deps: TableDeps) {
     this.deps = deps;
     this.windowsHostLive = new WindowsHostLive(deps.hostPid, deps.log, deps.windowsLive);
+    // On Windows the transcripts are WSL's files: asked of a command inside WSL, never read across.
+    const wsl = deps.wsl;
+    const read: TranscriptReader =
+      wsl === null
+        ? async (sessions, since) => readTranscripts(sessions, since, transcriptRoots(homedir()))
+        : (sessions, since) => wsl.run(transcriptScan(sessions, since), WSL_TIMEOUT);
+    this.starters = new Starters(read, (error) => deps.log("docker_starters_failed", { error }));
   }
 
   /** Whether this host's own Windows processes are read: only on a host on Windows itself. */
@@ -244,6 +265,13 @@ export class Tables {
     infos
       .then((found) => {
         this.dockerInfos = found;
+        const sessions = this.deps.sessions?.() ?? [];
+        this.starters.refresh(
+          found,
+          sessions,
+          (info) => ownerOf(info, sessions) !== "",
+          Date.now(),
+        );
       })
       // Until Docker answers, the containers go by their ids.
       .catch((error: unknown) => this.deps.log("docker_failed", { error: String(error) }));
@@ -312,4 +340,15 @@ export class Tables {
         this.windowsHostReading = false;
       });
   }
+}
+
+/** The tables for the extension's host: `wsl` is null where this host's `/proc` is Linux. */
+export function tablesOf(api: ExtensionApi, wsl: WslLinux | null, windows: boolean): Tables {
+  return new Tables({
+    wsl,
+    windows,
+    hostPid: process.pid,
+    sessions: () => api.sessions(),
+    log: (event, data) => api.log(event, data),
+  });
 }
