@@ -16,7 +16,9 @@
  *   second with nothing wrong (4,195 measured here, 2026-10-01).
  */
 
+import type { EtwHolder } from "./etw-holders";
 import type { WindowsCounters, WindowsInfo } from "./windows";
+import { isEtwTag, type PoolGrowth } from "./windows-memory";
 import type { LinuxSample } from "./wsl";
 
 export type Tone = "good" | "warning" | "critical";
@@ -78,6 +80,8 @@ export type MemoryCheck = {
   what: "commit" | "trimming" | "pageFile" | "available" | "poolPaged" | "poolNonpaged";
   tone: Tone;
   text: string;
+  /** A sentence of its own the headline adds after the reasons (the process holding an event-tracing leak). */
+  note?: string;
 };
 
 /**
@@ -94,16 +98,32 @@ export type MemoryCheck = {
  * say why memory is fine as well as why it is not. A counter that is missing
  * is no check at all, never a 0.
  */
-export function windowsMemoryChecks(c: WindowsCounters, info: WindowsInfo): MemoryCheck[] {
+export function windowsMemoryChecks(
+  c: WindowsCounters,
+  info: WindowsInfo,
+  leaks: PoolLeaks | null = null,
+): MemoryCheck[] {
   const checks = [
     c.committed === null ? null : commitCheck(c.committed),
     c.transitionFaults === null ? null : trimmingCheck(c.transitionFaults),
     c.pagesOut === null ? null : pageFileCheck(c.pagesOut),
     c.availableMB === null ? null : availableCheck(c.availableMB * 2 ** 20, info.memTotal),
-    c.poolPaged === null ? null : poolCheck("poolPaged", "paged pool", c.poolPaged),
-    c.poolNonpaged === null ? null : poolCheck("poolNonpaged", "non-paged pool", c.poolNonpaged),
-  ];
-  return checks.filter((check) => check !== null);
+    c.poolPaged === null ? null : poolCheck("poolPaged", "paged pool", c.poolPaged, leaks),
+    c.poolNonpaged === null
+      ? null
+      : poolCheck("poolNonpaged", "non-paged pool", c.poolNonpaged, leaks),
+  ].filter((check) => check !== null);
+  // The process holding the leak is named once, by the first pool that has one.
+  let named = false;
+  return checks.map((check) => {
+    if (check.note === undefined) return check;
+    if (!named) {
+      named = true;
+      return check;
+    }
+    const { note: _again, ...once } = check;
+    return once;
+  });
 }
 
 function commitCheck(committed: number): MemoryCheck {
@@ -136,10 +156,73 @@ function availableCheck(bytes: number, memTotal: number): MemoryCheck {
   return { what: "available", tone, text };
 }
 
-function poolCheck(what: "poolPaged" | "poolNonpaged", name: string, bytes: number): MemoryCheck {
+/**
+ * What is known of a leak in the kernel pools: `growth` the tags whose live
+ * allocations grow (`poolGrowth`; null until 5 minutes of readings, or where
+ * the pool tags could not be read) and `holder` the process likely behind an
+ * event-tracing leak (`chooseEtwHolder`; null where none was found or the read
+ * failed).
+ */
+export type PoolLeaks = {
+  growth: readonly PoolGrowth[] | null;
+  holder: EtwHolder | null;
+  /** The headline sentence after the reader ended the holder (`end-holder.ts`); gone with the next holder read. */
+  ended?: string | undefined;
+};
+
+/** At most this many growing tags are named in a pool's reason. */
+const GROWING_NAMED = 3;
+
+const MiB = 2 ** 20;
+const sizeOf = (bytes: number): string =>
+  bytes >= GiB ? gb(bytes) : `${Math.round(bytes / MiB)} MB`;
+
+/** A rate to two significant figures from 100 up: 369 reads "370", 1,108 reads "1,100". */
+function rateOf(perMinute: number): string {
+  const n = perMinute >= 100 ? Number(perMinute.toPrecision(2)) : Math.round(perMinute);
+  return n.toLocaleString("en-US");
+}
+
+/** `EtwD 1.1 GB (+370 a minute, event tracing)`: the meaning is the part of the tag's text before its first semicolon. */
+function growingTag(t: PoolGrowth): string {
+  const meaning = t.meaning.split(";")[0] ?? "";
+  const how = `+${rateOf(t.perMinute)} a minute${meaning === "" ? "" : `, ${meaning}`}`;
+  return `${t.tag} ${sizeOf(t.bytes)} (${how})`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The sentence that names the process holding event-tracing registrations; the date is local. */
+function holderNote(holder: EtwHolder): string {
+  const since = new Date(holder.since);
+  const day = `${since.getDate()} ${MONTHS[since.getMonth()]}`;
+  const n = holder.registrations.toLocaleString("en-US");
+  return `${holder.name}, started ${day} and now suspended, holds ${n} event-tracing registrations: closing it should free them.`;
+}
+
+function poolCheck(
+  what: "poolPaged" | "poolNonpaged",
+  name: string,
+  bytes: number,
+  leaks: PoolLeaks | null,
+): MemoryCheck {
   if (bytes <= POOL_ABNORMAL) return { what, tone: "good", text: `${name} ${gb(bytes)}` };
-  const text = `kernel ${name} ${gb(bytes)}, over 2 GB: a driver or service is leaking`;
-  return { what, tone: "warning", text };
+  const head = `kernel ${name} ${gb(bytes)}, over 2 GB: `;
+  if (leaks === null || leaks.growth === null) {
+    return { what, tone: "warning", text: `${head}a driver or service is leaking` };
+  }
+  const pool = what === "poolPaged" ? "paged" : "nonpaged";
+  const growing = leaks.growth.filter((t) => t.pool === pool).sort((a, b) => b.bytes - a.bytes);
+  if (growing.length === 0) {
+    return {
+      what,
+      tone: "warning",
+      text: `${head}nothing is growing now: an old leak; a restart frees it`,
+    };
+  }
+  const text = `${head}growing ${growing.slice(0, GROWING_NAMED).map(growingTag).join(", ")}`;
+  const holder = growing.some((t) => isEtwTag(t.tag)) ? leaks.holder : null;
+  return { what, tone: "warning", text, ...(holder === null ? {} : { note: holderNote(holder) }) };
 }
 
 /** The checks that are not green, worst first: why Windows is short of memory. */
@@ -147,6 +230,11 @@ export function memoryReasons(checks: readonly MemoryCheck[]): MemoryCheck[] {
   return checks
     .filter((check) => check.tone !== "good")
     .sort((a, b) => RANK[b.tone] - RANK[a.tone]);
+}
+
+/** The sentences the reasons carry beyond their own text (`MemoryCheck.note`), for the headline to add once after them. */
+export function memoryNotes(checks: readonly MemoryCheck[]): string[] {
+  return memoryReasons(checks).flatMap((check) => (check.note === undefined ? [] : [check.note]));
 }
 
 export function windowsVerdicts(c: WindowsCounters, info: WindowsInfo): Verdicts {
@@ -175,7 +263,13 @@ export function withGreyWords<H extends { tone: Tone; text: string }>(h: H, grey
 const WORDS: Record<Resource, string> = { cpu: "CPU", memory: "memory", disk: "disk" };
 
 /** A place the headline judges; `memoryReasons` (Windows) says why its memory is not green. */
-export type Place = { name: string; verdicts: Verdicts; memoryReasons?: readonly string[] };
+export type Place = {
+  name: string;
+  verdicts: Verdicts;
+  memoryReasons?: readonly string[];
+  /** Whole sentences added after the memory sentence (`memoryNotes`). */
+  memoryNotes?: readonly string[];
+};
 
 /**
  * "Out of CPU in WSL." / "Short of memory in Windows: 96 % of commit used,
@@ -189,17 +283,27 @@ export function headline(places: Place[]): {
   const out: string[] = [];
   let tone: Tone = "good";
   for (const severity of ["critical", "warning"] as const) {
-    for (const { name, verdicts, memoryReasons: why = [] } of places) {
-      const short = (Object.keys(verdicts) as Resource[]).filter((r) => verdicts[r] === severity);
-      if (short.length === 0) continue;
+    for (const place of places) {
+      const sentence = shortSentence(place, severity);
+      if (sentence === null) continue;
       tone = worst(tone, severity);
-      const what = short.map((r) => WORDS[r]).join(" and ");
-      const reasons = short.includes("memory") && why.length > 0 ? `: ${why.join(", ")}` : "";
-      out.push(`${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}${reasons}.`);
+      out.push(sentence);
     }
   }
   return {
     tone,
     text: out.length > 0 ? out.join(" ") : "Nothing is short: CPU, memory and disk are fine.",
   };
+}
+
+/** One place's sentence for the resources at `severity`, its memory reasons and notes after it; null where none is. */
+function shortSentence(place: Place, severity: "critical" | "warning"): string | null {
+  const { name, verdicts, memoryReasons: why = [], memoryNotes: notes = [] } = place;
+  const short = (Object.keys(verdicts) as Resource[]).filter((r) => verdicts[r] === severity);
+  if (short.length === 0) return null;
+  const what = short.map((r) => WORDS[r]).join(" and ");
+  const memory = short.includes("memory");
+  const reasons = memory && why.length > 0 ? `: ${why.join(", ")}` : "";
+  const after = memory ? notes.map((note) => ` ${note}`).join("") : "";
+  return `${severity === "critical" ? "Out of" : "Short of"} ${what} in ${name}${reasons}.${after}`;
 }

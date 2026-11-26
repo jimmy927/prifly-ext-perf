@@ -41,6 +41,7 @@ const POOL_TAG_MEANINGS: Record<string, string> = {
   SeAt: "security attributes, kept with tokens",
   FMfn: "file names cached by file-system filters (antivirus and the like)",
   EtwD: "event tracing",
+  Etwr: "event tracing",
   MmSt: "memory manager: mapped-file tables",
   MmCa: "memory manager: control areas of mapped files",
   File: "open file objects",
@@ -70,6 +71,65 @@ export function parsePoolTags(out: string, shown = POOL_TAGS_SHOWN): PoolTag[] |
     .sort((a, b) => b.bytes - a.bytes)
     .slice(0, shown);
 }
+
+/** One read of every tag over 1 MB, kept to see which tags grow. */
+export type PoolReading = { at: number; tags: PoolTag[] };
+
+/** How long the readings are kept. */
+export const POOL_HISTORY_MS = 30 * 60_000;
+/** A tag's growth is worked out over at most this look-back, and over at least `GROWTH_MIN_SPAN_MS`. */
+const GROWTH_LOOKBACK_MS = 10 * 60_000;
+export const GROWTH_MIN_SPAN_MS = 5 * 60_000;
+/**
+ * A tag "grows" when its live allocations rose by more than 5 a minute AND by
+ * more than 0.1 % of its live count an hour. Measured here on 2026-11-25:
+ * EtwD +370 a minute of 4.83 M live (0.46 % an hour), Etwr +1,100 of 8.28 M
+ * (0.80 %) and Toke +14 of 303 k (0.28 %) all grow; a flat tag such as FMfn,
+ * with millions live, needs over 30 a minute to count, so ordinary churn does not.
+ */
+export const GROWING_MIN_PER_MINUTE = 5;
+export const GROWING_MIN_SHARE_PER_HOUR = 0.001;
+
+/** A pool tag whose live allocations are growing, and how fast. */
+export type PoolGrowth = PoolTag & { perMinute: number };
+
+/** Adds `reading` to `history` (oldest first) and drops what is older than 30 minutes. */
+export function keepPoolReading(history: PoolReading[], reading: PoolReading): void {
+  history.push(reading);
+  const cutoff = reading.at - POOL_HISTORY_MS;
+  while (history.length > 0 && (history[0]?.at ?? 0) < cutoff) history.shift();
+}
+
+/**
+ * The tags whose live allocations grow, biggest first, over the last 10
+ * minutes of `history` (oldest first): null with less than 5 minutes of
+ * readings to compare. A tag counts only where both ends of the stretch list
+ * it (a tag under 1 MB is not listed).
+ */
+export function poolGrowth(history: readonly PoolReading[]): PoolGrowth[] | null {
+  const last = history.at(-1);
+  if (last === undefined) return null;
+  const first = history.find((r) => r.at >= last.at - GROWTH_LOOKBACK_MS);
+  if (first === undefined || last.at - first.at < GROWTH_MIN_SPAN_MS) return null;
+  const minutes = (last.at - first.at) / 60_000;
+  const before = new Map(first.tags.map((t) => [`${t.pool}|${t.tag}`, t.live]));
+  const out: PoolGrowth[] = [];
+  for (const t of last.tags) {
+    const was = before.get(`${t.pool}|${t.tag}`);
+    if (was === undefined) continue;
+    const perMinute = (t.live - was) / minutes;
+    if (
+      perMinute > GROWING_MIN_PER_MINUTE &&
+      perMinute * 60 > t.live * GROWING_MIN_SHARE_PER_HOUR
+    ) {
+      out.push({ ...t, perMinute });
+    }
+  }
+  return out.sort((a, b) => b.bytes - a.bytes);
+}
+
+/** Whether `tag` is an event-tracing tag: EtwD or Etwr. */
+export const isEtwTag = (tag: string): boolean => tag === "EtwD" || tag === "Etwr";
 
 /** Allocations and frees are 32-bit counters that wrap: live is their difference, mod 2^32. */
 const liveOf = (allocs: number, frees: number): number => (allocs - frees + 2 ** 32) % 2 ** 32;

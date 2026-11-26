@@ -267,31 +267,6 @@ export type PanelRequest = {
   body: unknown;
 };
 
-/** A cloud session of one of the Claude accounts connected to prifly. */
-export type CloudSessionInfo = {
-  id: string;
-  /** The account that created it, and the only one that can read it back. */
-  account: string;
-  title: string;
-  /** The repository its sandbox cloned, `https://github.com/o/r`, or "". */
-  repo: string;
-  model: string;
-  /** Epoch ms. */
-  createdAt: number;
-  updatedAt: number;
-};
-
-/** The sessions on Anthropic's side, for an extension that reports on them. */
-export type ExtensionCloud = {
-  /** Every cloud session of every connected account; an account that cannot be read is left out. */
-  sessions(): Promise<CloudSessionInfo[]>;
-  /**
-   * A cloud session's transcript: Claude Code's own stored lines, the same
-   * shape as a local `~/.claude/projects` JSONL file's, oldest first.
-   */
-  transcript(account: string, sessionId: string): Promise<unknown[]>;
-};
-
 /** One plan limit of an account, as prifly's usage poller last read it. */
 export type AccountLimitInfo = {
   /** The statusline's name: "5h" (5-hour session), "7d" (weekly, all models), "7F" … (weekly, one model). */
@@ -559,8 +534,6 @@ export type ExtensionApi = {
    * Python; the extension ships neither).
    */
   paths: readonly string[];
-  /** The cloud sessions of the accounts connected to prifly, read with their own tokens. */
-  cloud: ExtensionCloud;
   /**
    * Every Claude account prifly holds limits for — local logins and cloud-only
    * logins, one entry per email — as the host's pollers last read them. No

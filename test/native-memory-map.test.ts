@@ -126,7 +126,6 @@ function nativeState(shell: FakeSh, readTimeout: number) {
     log: () => {},
     show: () => {},
     sessions: () => [],
-    cloud: { sessions: async () => [] },
   } as unknown as ExtensionApi;
   const state: State = {
     api,
@@ -144,13 +143,14 @@ function nativeState(shell: FakeSh, readTimeout: number) {
     topWindowsAt: now,
     pools: null,
     poolsAt: now,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor(
       () => {},
       [],
       async () => null,
     ),
-    cloud: null,
-    cloudAt: now,
     askedAt: now,
     askedWindow: 2,
     chip: "",

@@ -65,8 +65,6 @@ function host(listFails = false) {
     windows: { history: [] },
     gpu: { refresh: () => {} },
     topWindowsAt: 0,
-    // Never due: the cloud sessions are not what is tested.
-    cloudAt: Number.MAX_SAFE_INTEGER,
     compressions: [],
     compressed: null,
     holders: null,

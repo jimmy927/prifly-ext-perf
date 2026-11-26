@@ -10,8 +10,9 @@ import type { NannyMemory } from "./nanny";
 import type { ToolUse } from "./prifly";
 import type { ExtensionApi } from "./prifly-api";
 import type { Tables } from "./tables";
+import type { PoolLeaks } from "./verdict";
 import type { WindowsInfo } from "./windows";
-import type { CompressionReading, PoolTag } from "./windows-memory";
+import type { CompressionReading, PoolReading, PoolTag } from "./windows-memory";
 import type { WindowsSampler } from "./windows-sampler";
 import type { WindowsProcess } from "./windows-top";
 import type { LinuxRaw } from "./wsl";
@@ -47,15 +48,20 @@ export type State = {
   topWindowsAt: number;
   /**
    * The biggest kernel pool tags (`poolTags`), read while the window is open
-   * and Windows gives pool sizes; `tags` is null with why in `error` when the
+   * and Windows gives pool sizes, and every minute while shut with a pool
+   * over 2 GB (`readPools`); `tags` is null with why in `error` when the
    * read failed. Null before the first read.
    */
   pools: { tags: PoolTag[] | null; error: string } | null;
   poolsAt: number;
+  /** Every pool tag over 1 MB at each read, the last 30 minutes: what growth is worked out from. */
+  poolHistory: PoolReading[];
+  /** What is known of the pool leak now (`PoolLeaks`); unknown until 5 minutes of readings. */
+  leaks: PoolLeaks;
+  /** When the event-tracing holder was last looked for. */
+  etwHolderAt: number;
   /** The graphics card, read while the window is open (`gpu-live.ts`). */
   gpu: GpuMonitor;
-  cloud: { recent: number; total: number } | null;
-  cloudAt: number;
   askedAt: number;
   /** Seconds of the window it asked for last. */
   askedWindow: number;

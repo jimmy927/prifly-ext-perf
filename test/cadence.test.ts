@@ -152,7 +152,6 @@ function host() {
     sessions: () => [],
     notify: () => {},
     prompt: async () => ({ delivered: true }),
-    cloud: { sessions: async () => [] },
   } as unknown as ExtensionApi;
   const state: State = {
     api,
@@ -170,13 +169,14 @@ function host() {
     topWindowsAt: 0,
     pools: null,
     poolsAt: 0,
+    poolHistory: [],
+    leaks: { growth: null, holder: null },
+    etwHolderAt: 0,
     gpu: new GpuMonitor(
       () => {},
       [],
       async () => null,
     ),
-    cloud: null,
-    cloudAt: 0,
     askedAt: 0,
     askedWindow: 2,
     chip: "",

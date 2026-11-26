@@ -172,7 +172,23 @@ Windows counts as used, so 18 % available with 70 % committed and no paging
 is a calm machine. When memory is orange or red, the headline names why:
 *Out of memory in Windows: Windows is trimming 150k pages a second, 96 % of
 commit used, kernel paged pool 4.7 GB, over 2 GB: a driver or service is
-leaking.*
+leaking.* Once the pool tags have been read for 5 minutes, a pool over 2 GB
+names the tags whose live allocations grow, biggest first, at most three:
+*kernel paged pool 4.1 GB, over 2 GB: growing EtwD 1.1 GB (+370 a minute,
+event tracing), Toke 629 MB (+14 a minute, security tokens).* A tag grows
+when its live count rose by more than 5 a minute and by more than 0.1 % of
+itself an hour. If none does, it says *nothing is growing now: an old leak; a
+restart frees it*. When an event-tracing tag (EtwD, Etwr) grows, the headline
+also names the likely holder: a suspended process started over an hour ago
+with at least 100 event-tracing registrations (a suspended app never drains
+the notifications queued for its providers), as *SystemSettings, started 15
+Nov and now suspended, holds 639 event-tracing registrations: closing it
+should free them.* once, however many pools grow. Windows starts Settings
+(`SystemSettings.exe`) by itself and suspends it at once, so this one comes
+back; an **End it** button beside the headline ends the named process (only
+the one named now, by its pid) and the headline then says when it was ended;
+Windows frees the memory over the next minutes. If a read fails, the text is
+the plain one and the failure is logged.
 
 Commit charge is the memory row's headline because it is what runs out.
 Every allocation a program makes is promised against the commit limit, RAM
@@ -431,8 +447,7 @@ card…". Read only while the window is open, as the card is.
 
 ![The prifly tab](screenshots/prifly-light.png)
 
-- **Tiles**: processes, sessions working and idle (plus cloud sessions active
-  this hour), MCP server copies, memory, and CPU and disk.
+- **Tiles**: processes, sessions working and idle, MCP server copies, memory, and CPU and disk.
 - **By kind**: stacked bars for memory, CPU and processes, split into each
   session's `claude`, MCP servers, the tools turns run (shells, tests,
   builds), the Docker containers sessions started, the host with its helpers,
@@ -459,9 +474,6 @@ card…". Read only while the window is open, as the card is.
 - **By session**: each session's processes, CPU, memory, disk, MCP servers
   and the busiest program its turn is running now, grouped into working,
   waiting for you, idle at their prompt, and other.
-
-Cloud sessions run on Anthropic's machines and their MCP servers run in that
-sandbox, so they add no processes here. They are only counted.
 
 ## Nanny
 
@@ -523,9 +535,12 @@ you are.
   through `NtQuerySystemInformation(SystemPoolTagInformation)`, which needs no
   admin (a little C#, compiled once per PowerShell); tags under 1 MB are left
   out and the eight biggest shown. If that read fails, the pool sizes still
-  show and the list says why. And **cloud
-  sessions** (prifly's accounts, every 5 min) are read only while the window
-  is open.
+  show and the list says why. The tags are also read while the window is
+  shut, once a minute, but only while a pool is over 2 GB; every tag over 1 MB
+  is kept for 30 minutes to work out which grow. While an event-tracing tag
+  grows, a second C# read (also `ntdll`, no admin) counts the
+  `EtwRegistration` handles of each process and checks whether all its
+  threads are suspended, at most every 5 minutes.
 
 On a Linux with no Windows around it there is no Windows to read: the window
 shows Linux alone.

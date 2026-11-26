@@ -219,9 +219,47 @@ function drawTop(state) {
   $("top").replaceChildren(...(rows.length > 0 ? rows : [empty]));
 }
 
+// The suspended app the headline names, when it may be ended: `{ pid, name }` or null.
+let ending = false;
+
+/** The End it button beside the headline: shown while a holder is named, disabled while it is being ended. */
+function drawEndIt(holder) {
+  const button = $("end-it");
+  button.hidden = holder === null || holder === undefined;
+  button.disabled = ending;
+  button.textContent = ending ? "Ending…" : "End it";
+  button.onclick = () => endIt(holder);
+}
+
+async function endIt(holder) {
+  if (ending || !holder) return;
+  ending = true;
+  $("end-error").hidden = true;
+  drawEndIt(holder);
+  try {
+    const response = await fetch("api/end-holder", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pid: holder.pid, name: holder.name }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? response.statusText);
+  } catch (error) {
+    $("end-error").hidden = false;
+    $("end-error").textContent = String(error.message ?? error);
+  }
+  ending = false;
+  // The next status says it was ended (or still names the holder after a failure).
+  if (last !== null) drawEndIt(last.endHolder);
+  await refresh(last?.window ?? 60);
+}
+
 function drawMachine(state) {
   $("verdict").className = `verdict ${state.headline.tone}`;
-  $("headline").textContent = state.headline.text;
+  $("headline").textContent = state.holderEnded
+    ? `${state.headline.text} ${state.holderEnded}`
+    : state.headline.text;
+  drawEndIt(state.endHolder);
   drawWhere(state);
   const cards = [state.linux === null ? absentCard(state.linuxAbsent) : linuxCard(state.linux)];
   if (state.windows !== null) cards.push(windowsCard(state.windows, state.top.windows));
@@ -250,11 +288,10 @@ function drawTiles(report, state) {
   const waiting = report.sessions.filter((s) => s.state === "waiting").length;
   const idle = report.sessions.filter((s) => s.state === "idle").length;
   const copies = report.mcp.reduce((sum, m) => sum + m.copies, 0);
-  const cloud = state.cloud === null ? "" : ` · ${state.cloud.recent} cloud this hour`;
   const k = report.kinds;
   $("tiles").replaceChildren(
     tile("Processes", String(report.total.processes), `for ${report.sessions.length} sessions`),
-    tile("Sessions", `${working} working`, `${waiting} waiting for you · ${idle} idle${cloud}`),
+    tile("Sessions", `${working} working`, `${waiting} waiting for you · ${idle} idle`),
     tile(
       "MCP server copies",
       String(copies),
@@ -325,7 +362,7 @@ function group(title, rows) {
   ];
 }
 
-function drawSessions(report, state) {
+function drawSessions(report) {
   const maxCpu = Math.max(1, ...report.sessions.map((s) => s.cpu));
   const working = report.sessions.filter((s) => WORKING.has(s.state));
   const waiting = report.sessions.filter((s) => s.state === "waiting");
@@ -342,10 +379,6 @@ function drawSessions(report, state) {
   ]) {
     rows.push(...group(title, list), ...list.map((s) => sessionRow(s, maxCpu)));
   }
-  if (state.cloud !== null) {
-    const text = `Cloud · ${state.cloud.recent} active this hour, ${state.cloud.total} in all — they run on Anthropic's machines, with no processes here`;
-    rows.push(el("tr", { class: "group" }, el("td", { colspan: "8" }, text)));
-  }
   $("sessions").replaceChildren(...rows);
 }
 
@@ -360,7 +393,7 @@ function drawPrifly(state) {
   drawTiles(report, state);
   drawKinds(report, state);
   drawMcp(report);
-  drawSessions(report, state);
+  drawSessions(report);
 }
 
 function draw(state) {
